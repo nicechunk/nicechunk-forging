@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#12130f" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=0.1.53" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=0.1.53" />
+    <link rel="shortcut icon" href="/favicon.ico?v=0.1.53" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=0.1.53" />
+    <link rel="manifest" href="/site.webmanifest?v=0.1.53" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <title data-i18n="forging.title">Nicechunk Forging Bench</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="forging-layout">
+      <section class="scene-pane" aria-label="Forging scene" data-i18n-aria-label="forging.sceneLabel">
+        <div class="scene-toolbar">
+          <strong data-i18n="forging.appName">Forging Bench</strong>
+          <div class="scene-actions">
+            <button id="showChainCode" type="button" data-i18n="forging.chainCode">Chain Code</button>
+            <div data-i18n-language-menu></div>
+            <button id="resetCamera" type="button" data-i18n="forging.resetView">Reset View</button>
+          </div>
+        </div>
+        <canvas id="forgeScene"></canvas>
+        <div class="forge-status">
+          <span id="statusText" data-i18n="forging.status.ready">Ready</span>
+          <span id="shapeText">-</span>
+        </div>
+        <div class="tool-hotbar" id="toolHotbar" aria-label="Tool slots" data-i18n-aria-label="forging.toolSlots"></div>
+      </section>
+
+      <aside class="resource-pane">
+        <header class="panel-head">
+          <div>
+            <p data-i18n="forging.panelEyebrow">MVP WORKSTATION</p>
+            <h1 data-i18n="forging.panelTitle">Tool Forging</h1>
+          </div>
+          <button id="hammerMode" class="hammer-button" type="button" aria-pressed="false" data-i18n="forging.hammer">Hammer</button>
+        </header>
+
+        <section class="panel-section">
+          <h2 data-i18n="forging.resources">Resources</h2>
+          <div class="resource-grid" id="resourceGrid">
+            <button class="resource-card" type="button" draggable="true" data-resource="iron">
+              <span class="resource-swatch iron" aria-hidden="true"></span>
+              <strong data-i18n="forging.resource.iron.name">Iron Ore</strong>
+              <span data-i18n="forging.resource.iron.detail">Hard tool core</span>
+            </button>
+            <button class="resource-card" type="button" draggable="true" data-resource="copper">
+              <span class="resource-swatch copper" aria-hidden="true"></span>
+              <strong data-i18n="forging.resource.copper.name">Copper Ore</strong>
+              <span data-i18n="forging.resource.copper.detail">Soft conductive metal</span>
+            </button>
+            <button class="resource-card" type="button" draggable="true" data-resource="tin">
+              <span class="resource-swatch tin" aria-hidden="true"></span>
+              <strong data-i18n="forging.resource.tin.name">Tin Ore</strong>
+              <span data-i18n="forging.resource.tin.detail">Light alloy material</span>
+            </button>
+            <button class="resource-card" type="button" draggable="true" data-resource="handle">
+              <span class="resource-swatch handle" aria-hidden="true"></span>
+              <strong data-i18n="forging.resource.handle.name">Handle</strong>
+              <span data-i18n="forging.resource.handle.detail">Hand binding grip</span>
+            </button>
+            <button class="resource-card" type="button" draggable="true" data-resource="coal">
+              <span class="resource-swatch coal" aria-hidden="true"></span>
+              <strong data-i18n="forging.resource.coal.name">Coal</strong>
+              <span data-i18n="forging.resource.coal.detail">Raises forging heat</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <h2 data-i18n="forging.drafts">Drafts</h2>
+          <div class="action-row">
+            <button id="saveDraft" type="button" data-i18n="forging.saveDraft">Save Draft</button>
+            <button id="saveDraftAsNew" type="button" data-i18n="forging.newDraft">New Draft</button>
+          </div>
+          <div class="draft-list" id="draftList" aria-label="Draft list" data-i18n-aria-label="forging.draftList"></div>
+        </section>
+
+        <section class="panel-section">
+          <h2 data-i18n="forging.workpiece">Workpiece</h2>
+          <dl class="stat-list">
+            <div>
+              <dt data-i18n="forging.material">Material</dt>
+              <dd id="materialValue">-</dd>
+            </div>
+            <div>
+              <dt data-i18n="forging.heat">Heat</dt>
+              <dd id="heatValue">0%</dd>
+            </div>
+            <div>
+              <dt data-i18n="forging.mass">Mass</dt>
+              <dd id="massValue">0</dd>
+            </div>
+            <div>
+              <dt data-i18n="forging.shape">Shape</dt>
+              <dd id="shapeValue">-</dd>
+            </div>
+          </dl>
+          <div class="action-row">
+            <button id="normalizePiece" type="button" data-i18n="forging.normalize">Normalize</button>
+            <button id="castPiece" type="button" data-i18n="forging.cast">Cast</button>
+            <button id="clearPiece" type="button" data-i18n="forging.clear">Clear</button>
+          </div>
+          <div class="action-row">
+            <button type="button" data-rotate-axis="x" data-i18n="forging.rotateX">Rotate X</button>
+            <button type="button" data-rotate-axis="y" data-i18n="forging.rotateY">Rotate Y</button>
+            <button type="button" data-rotate-axis="z" data-i18n="forging.rotateZ">Rotate Z</button>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <div class="chain-modal" id="chainModal" aria-hidden="true">
+      <section class="chain-dialog" role="dialog" aria-modal="true" aria-labelledby="chainModalTitle">
+        <header class="chain-dialog-head">
+          <h2 id="chainModalTitle" data-i18n="forging.chainCodeTitle">Forged Chain Code</h2>
+          <button id="closeChainCode" type="button" data-i18n-aria-label="forging.close"></button>
+        </header>
+        <textarea id="chainCodeOutput" spellcheck="false" wrap="soft" data-i18n-placeholder="forging.chainCodePlaceholder"></textarea>
+        <div class="chain-dialog-actions">
+          <p data-i18n="forging.chainCodeHint">This compact code stores the forged components, offsets, dimensions, materials, and voxel cuts.</p>
+          <button id="generateChainCode" type="button" data-i18n="forging.generateCode">Generate</button>
+          <button id="saveChainCode" type="button" data-i18n="forging.saveCode">Save</button>
+          <button id="copyChainCode" type="button" data-i18n="forging.copyCode">Copy Code</button>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="./forging.js"></script>
+  </body>
+</html>
