@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import "../src/site-header.css";
+import "../src/site-ui.js";
 import { initI18n, t } from "../src/i18n.js";
 import { equipForgedItemOnAvatar, saveForgedItem } from "../src/forgedItems.js";
 import { createAvatar, createAvatarMaterials } from "../src/render/avatar.js";
