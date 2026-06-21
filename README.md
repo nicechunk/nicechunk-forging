@@ -22,6 +22,14 @@ The page is allowed to be expressive: tools, camera controls, bench geometry, dr
 
 This is why local storage is treated as a prototype persistence layer, not the final ownership model. It lets the team test item shape, grip, mass, and visual behavior before deciding which fields deserve protocol backing.
 
+## Decode And Equipment Flow
+
+![Decode and equipment flow](docs/diagrams/decode-render-equipment-flow.svg)
+
+The forge runtime should be judged by how well it preserves old artifacts while allowing the editor to improve. `decodeForgeCode()` is the compatibility boundary. It reads the versioned bitstream, chooses the legacy solid-run path or the newer appearance blueprint path, and returns a normalized blueprint that rendering code can rebuild into a mesh.
+
+That split is important for player trust. A saved item should not depend on the exact editor state that created it. The item should survive as a compact code, rebuild visible geometry, expose grip metadata, and attach to the avatar runtime in a predictable way. Future chain-backed ownership should inherit that boundary instead of storing transient editor state.
+
 ## System Principles
 
 - Item generation should be inspectable: forged output should be explainable from inputs and visible traits.
