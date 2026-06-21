@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Forge code lifecycle</title>
+  <desc id="desc">A diagram showing how a forged workpiece becomes an NCF code, can be stored locally, decoded into geometry, and equipped by an avatar.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0d12"/>
+      <stop offset="1" stop-color="#17110c"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#ffd07a"/>
+    </marker>
+    <style>
+      .label{font:800 12px Inter,ui-sans-serif,system-ui,sans-serif;letter-spacing:.16em;fill:#ffd07a}
+      .title{font:850 42px Inter,ui-sans-serif,system-ui,sans-serif;fill:#f8f2e8}
+      .copy{font:500 17px Inter,ui-sans-serif,system-ui,sans-serif;fill:#cfc1af}
+      .card{fill:rgba(255,255,255,.06);stroke:rgba(255,255,255,.16);stroke-width:1.2;rx:18}
+      .head{font:800 19px Inter,ui-sans-serif,system-ui,sans-serif;fill:#f8f2e8}
+      .small{font:600 13px Inter,ui-sans-serif,system-ui,sans-serif;fill:#d8c8b6}
+      .mono{font:750 14px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#ffe099}
+      .line{stroke:#ffd07a;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <circle cx="1000" cy="118" r="240" fill="#ff7a2a" opacity=".09"/>
+  <circle cx="236" cy="600" r="270" fill="#00c2ff" opacity=".07"/>
+  <text x="70" y="78" class="label">FORGING SYSTEM</text>
+  <text x="70" y="132" class="title">A handcrafted item becomes a portable code.</text>
+  <text x="70" y="168" class="copy">The forge UI edits geometry, but the durable artifact is the compact NCF byte stream that can be decoded anywhere.</text>
+
+  <g transform="translate(78 248)">
+    <rect class="card" width="214" height="190"/>
+    <text x="24" y="42" class="head">Workbench</text>
+    <text x="24" y="76" class="small">resources, tools, cuts</text>
+    <text x="24" y="104" class="small">and component placement</text>
+    <rect x="62" y="132" width="86" height="28" fill="#9ca4a2"/>
+    <rect x="92" y="110" width="28" height="72" fill="#7b5438"/>
+  </g>
+  <path class="line" d="M292 342 H360"/>
+  <g transform="translate(382 248)">
+    <rect class="card" width="250" height="190"/>
+    <text x="24" y="42" class="head">Quantized blueprint</text>
+    <text x="24" y="76" class="small">grid dimensions</text>
+    <text x="24" y="104" class="small">grip offset</text>
+    <text x="24" y="132" class="small">quads or solid runs</text>
+    <text x="24" y="160" class="mono">version 4 appearance</text>
+  </g>
+  <path class="line" d="M632 342 H700"/>
+  <g transform="translate(722 248)">
+    <rect class="card" width="230" height="190"/>
+    <text x="24" y="42" class="head">NCF code</text>
+    <text x="24" y="76" class="mono">NCF1.&lt;base64url&gt;</text>
+    <text x="24" y="112" class="small">stored as bytes</text>
+    <text x="24" y="140" class="small">deduplicated locally</text>
+    <text x="24" y="168" class="small">latest item pointer</text>
+  </g>
+  <path class="line" d="M952 342 H1020"/>
+  <g transform="translate(1042 248)">
+    <rect class="card" width="170" height="190"/>
+    <text x="24" y="42" class="head">Runtime</text>
+    <text x="24" y="76" class="small">decode</text>
+    <text x="24" y="104" class="small">build mesh</text>
+    <text x="24" y="132" class="small">equip avatar</text>
+    <text x="24" y="160" class="small">render preview</text>
+  </g>
+
+  <g transform="translate(260 522)">
+    <rect class="card" width="760" height="88"/>
+    <text x="28" y="38" class="head">Engineering boundary</text>
+    <text x="28" y="64" class="small">The visual editor can evolve, but backward-compatible decode paths protect already saved forged items.</text>
+  </g>
+</svg>

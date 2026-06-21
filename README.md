@@ -12,6 +12,16 @@ Forging is where resources and elements start becoming player-owned items. Today
 
 Keeping forging separate gives the system room to mature as its own design domain.
 
+## Portable Artifact Flow
+
+![Forge code lifecycle](docs/diagrams/forge-code-lifecycle.svg)
+
+The durable output of the forge is not the editor session. It is an `NCF1.` code that encodes a quantized blueprint. The current implementation supports older solid-run components and the newer appearance blueprint path, so saved items can continue to decode as the editor evolves.
+
+The page is allowed to be expressive: tools, camera controls, bench geometry, drafts, and avatar preview all help find the right item feel. The code path needs to stay stricter. `decodeForgeCode()` should be the stable interpretation boundary, `createForgedItemMesh()` should rebuild visible geometry from that boundary, and avatar equipment should consume the rebuilt mesh rather than editor-only state.
+
+This is why local storage is treated as a prototype persistence layer, not the final ownership model. It lets the team test item shape, grip, mass, and visual behavior before deciding which fields deserve protocol backing.
+
 ## System Principles
 
 - Item generation should be inspectable: forged output should be explainable from inputs and visible traits.
