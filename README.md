@@ -4,6 +4,12 @@
 
 Forging prototype, forged item storage logic, and avatar integration.
 
+## Official Links
+
+GitHub: [https://github.com/nicechunk/nicechunk-forging](https://github.com/nicechunk/nicechunk-forging)
+
+Website: [https://nicechunk.com/forging/](https://nicechunk.com/forging/)
+
 ## Project Overview
 
 This repository contains the forging system prototype for NiceChunk. It includes the forging page, generated item logic, avatar equipment integration, and related visual assets.
