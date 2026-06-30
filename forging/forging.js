@@ -126,6 +126,7 @@ const avatarHandGripSize = new THREE.Vector3(0.34, 0.42, 0.32);
 const avatarHandGripFootprint = new THREE.Vector2(avatarHandGripSize.x, avatarHandGripSize.y);
 const gripGestureRotationStepRadians = Math.PI / 2;
 const gripContactVisualOffset = 0.012;
+const gripContactConformDepth = avatarHandGripSize.z * 0.55;
 const minimumGripContactCoverage = 0.18;
 
 const scene = new THREE.Scene();
@@ -1993,7 +1994,8 @@ function pointStillOnSurfacePlane(piece, localPoint, normal, normalAxis) {
     : -piece.dims.getComponent(normalAxis) * 0.5;
   const cellSize = piece.dims.getComponent(normalAxis) / piece.grid[axisKey(normalAxis)];
   const tolerance = Math.max(0.004, cellSize * 0.34);
-  return Math.abs(localPoint.getComponent(normalAxis) - plane) <= tolerance;
+  const inwardDepth = sign * (plane - localPoint.getComponent(normalAxis));
+  return inwardDepth >= -tolerance && inwardDepth <= gripContactConformDepth + tolerance;
 }
 
 function compoundGripBindingStillValid(piece, localPoint, normal, normalAxis) {
@@ -5034,6 +5036,7 @@ function evaluateGripFit(footprintA, footprintB, regionA, regionB, options = {})
     gripContactArea: contactArea,
     gripContactCoverage: contactCoverage,
     minGripContactCoverage: minimumGripContactCoverage,
+    gripContactConformDepth,
     foldedGripArea: foldedArea,
     gripPatchCount: patchCount,
     epsilon,
@@ -5072,6 +5075,7 @@ function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit, co
     gripContactArea: Number((fit.gripContactArea ?? 0).toFixed(6)),
     gripContactCoverage: Number((fit.gripContactCoverage ?? 0).toFixed(4)),
     minGripContactCoverage: Number((fit.minGripContactCoverage ?? 0).toFixed(4)),
+    gripContactConformDepth: Number((fit.gripContactConformDepth ?? 0).toFixed(4)),
     foldedGripArea: Number((fit.foldedGripArea ?? 0).toFixed(6)),
     gripPatchCount: fit.gripPatchCount ?? 0,
     narrowSpanAllowed: fit.narrowSpanAllowed,
@@ -5615,6 +5619,7 @@ function voxelGripPatchContactArea(piece, patch) {
   const visualPlane = patch.corners.reduce((sum, corner) => sum + corner.getComponent(normalAxis), 0) / patch.corners.length;
   const targetPlane = visualPlane - sign * gripContactVisualOffset;
   const planeTolerance = Math.max(cellSize[normalAxis] * 0.55, gripContactVisualOffset * 2.25);
+  const conformDepth = Math.max(gripContactConformDepth, cellSize[normalAxis] * 2.5);
   const cells = piece.solidCells ?? solidCellsFor(piece);
   let area = 0;
 
@@ -5622,7 +5627,8 @@ function voxelGripPatchContactArea(piece, patch) {
     if (!isExposedSurfaceCell(piece, cell, normal)) continue;
     const facePlane = -dims[normalAxis] * 0.5 +
       (sign > 0 ? cell[normalAxis] + 1 : cell[normalAxis]) * cellSize[normalAxis];
-    if (Math.abs(facePlane - targetPlane) > planeTolerance) continue;
+    const inwardDepth = sign * (targetPlane - facePlane);
+    if (inwardDepth < -planeTolerance || inwardDepth > conformDepth + planeTolerance) continue;
 
     const cellRangeA = cellRangeOnAxis(piece, cell, tangentAxes[0]);
     const cellRangeB = cellRangeOnAxis(piece, cell, tangentAxes[1]);
