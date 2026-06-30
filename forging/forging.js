@@ -100,11 +100,12 @@ const forgeDraftsStorageKey = "nicechunk.forging.drafts.v1";
 const activeForgeDraftStorageKey = "nicechunk.forging.activeDraft";
 const maxForgeDrafts = 24;
 const workpieceBaseY = 1.92;
+const forgeTopY = 1.49;
 const settleStep = 0.04;
 const settleMaxSteps = 420;
 const staticCollisionBoxes = [];
 const staticSupportSurfaces = [
-  { y: 0.72, minX: -1.25, maxX: 1.25, minZ: 0.18, maxZ: 1.08 },
+  { y: forgeTopY, minX: -1.68, maxX: 1.68, minZ: -1.68, maxZ: 1.68 },
   { y: -0.72, minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity },
 ];
 const axisLabelKeys = {
@@ -124,6 +125,8 @@ const toolCursorUrls = Object.fromEntries([
 const avatarHandGripSize = new THREE.Vector3(0.34, 0.42, 0.32);
 const avatarHandGripFootprint = new THREE.Vector2(avatarHandGripSize.x, avatarHandGripSize.y);
 const gripGestureRotationStepRadians = Math.PI / 2;
+const gripContactVisualOffset = 0.012;
+const minimumGripContactCoverage = 0.18;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x89b7c8);
@@ -153,6 +156,10 @@ forgeAvatar.userData.limbs.heldBlock.visible = false;
 let forgeAvatarEquippedMesh = null;
 let previewCode = "";
 let equipmentPreviewDirty = true;
+const gripFailureAnimations = [];
+const gripCollisionAttemptAnimations = [];
+const gripCollisionFlashAnimations = [];
+const avatarCollisionPartFlashAnimations = [];
 
 scene.add(new THREE.HemisphereLight(0xf8fbff, 0x6d704f, 3.35));
 const sun = new THREE.DirectionalLight(0xfff0cf, 3.35);
@@ -203,7 +210,7 @@ scene.add(forgeRoot);
 
 const forgeFireBlocks = [];
 const forgeFireLight = new THREE.PointLight(0xff8c00, 2.4, 9);
-forgeFireLight.position.set(0, 1.08, 0.18);
+forgeFireLight.position.set(0, 0.96, 1.02);
 scene.add(forgeFireLight);
 
 const forgeBase = createBox(3.45, 0.28, 3.45, 0x20201f);
@@ -212,13 +219,32 @@ forgeBase.castShadow = true;
 forgeBase.receiveShadow = true;
 forgeRoot.add(forgeBase);
 
-const forgeBody = createBox(3.08, 1.12, 3.08, 0x333333);
-forgeBody.position.set(0, 0.72, 0);
-forgeBody.castShadow = true;
-forgeBody.receiveShadow = true;
-forgeRoot.add(forgeBody);
+for (const [x, z, width, depth] of [
+  [0, -1.34, 3.08, 0.4],
+  [-1.34, 0, 0.4, 3.08],
+  [1.34, 0, 0.4, 3.08],
+  [-1.02, 1.34, 1.04, 0.4],
+  [1.02, 1.34, 1.04, 0.4],
+]) {
+  const bodyPanel = createBox(width, 1.12, depth, 0x333333);
+  bodyPanel.position.set(x, 0.72, z);
+  bodyPanel.castShadow = true;
+  bodyPanel.receiveShadow = true;
+  forgeRoot.add(bodyPanel);
+}
 
-const forgeDeck = createBox(3.36, 0.22, 3.36, 0x565656);
+const frontSill = createBox(1.1, 0.24, 0.4, 0x252525);
+frontSill.position.set(0, 0.28, 1.34);
+frontSill.castShadow = true;
+frontSill.receiveShadow = true;
+forgeRoot.add(frontSill);
+
+const forgeDeckInnerSize = 2.76;
+const forgeRimThickness = 0.32;
+const forgeRimCenter = forgeDeckInnerSize * 0.5 + forgeRimThickness * 0.5;
+const forgeOuterSize = forgeDeckInnerSize + forgeRimThickness * 2;
+
+const forgeDeck = createBox(forgeDeckInnerSize, 0.22, forgeDeckInnerSize, 0x565656);
 forgeDeck.position.set(0, 1.38, 0);
 forgeDeck.castShadow = true;
 forgeDeck.receiveShadow = true;
@@ -227,7 +253,7 @@ forgeRoot.add(forgeDeck);
 const forgeFireCore = createBox(0.88, 0.2, 0.88, 0xff4500, {
   material: new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.68 }),
 });
-forgeFireCore.position.set(0, 1.08, 0.18);
+forgeFireCore.position.set(0, 0.94, 1.02);
 forgeFireCore.renderOrder = 3;
 forgeRoot.add(forgeFireCore);
 forgeFireBlocks.push(forgeFireCore);
@@ -240,7 +266,7 @@ for (const [x, z, scale, color] of [
   const ember = createBox(0.34 * scale, 0.22 * scale, 0.34 * scale, color, {
     material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.62 }),
   });
-  ember.position.set(x, 1.18 + scale * 0.03, z + 0.18);
+  ember.position.set(x, 1.02 + scale * 0.03, z + 1.02);
   ember.renderOrder = 4;
   forgeRoot.add(ember);
   forgeFireBlocks.push(ember);
@@ -260,13 +286,13 @@ for (const [x, z] of [
 }
 
 for (const [x, z, width, depth] of [
-  [0, -1.74, 3.6, 0.18],
-  [0, 1.74, 3.6, 0.18],
-  [-1.74, 0, 0.18, 3.6],
-  [1.74, 0, 0.18, 3.6],
+  [0, -forgeRimCenter, forgeOuterSize, forgeRimThickness],
+  [0, forgeRimCenter, forgeOuterSize, forgeRimThickness],
+  [-forgeRimCenter, 0, forgeRimThickness, forgeDeckInnerSize],
+  [forgeRimCenter, 0, forgeRimThickness, forgeDeckInnerSize],
 ]) {
-  const rim = createBox(width, 0.16, depth, 0x1a1a1a);
-  rim.position.set(x, 1.56, z);
+  const rim = createBox(width, 0.22, depth, 0x1a1a1a);
+  rim.position.set(x, 1.38, z);
   rim.castShadow = true;
   rim.receiveShadow = true;
   forgeRoot.add(rim);
@@ -800,6 +826,8 @@ function createHandDrill() {
 
 function createGripHand() {
   const group = new THREE.Group();
+  group.name = "gripHand";
+  group.userData.ignoreAvatarCollision = true;
   const handMaterial = new THREE.MeshBasicMaterial({
     color: 0x40ff88,
     transparent: true,
@@ -816,6 +844,7 @@ function createGripHand() {
   const addHandPart = (name, size, position, material = handMaterial, rotation = null) => {
     const part = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), material);
     part.name = name;
+    part.userData.ignoreAvatarCollision = true;
     part.position.copy(position);
     if (rotation) part.rotation.set(rotation.x, rotation.y, rotation.z);
     group.add(part);
@@ -1526,6 +1555,7 @@ function refreshPieceGeometry(piece) {
   piece.edges.geometry.dispose();
   piece.edges.geometry = new THREE.EdgesGeometry(geometry, 28);
   updatePieceMass(piece);
+  validateGripBindingAfterGeometryChange(piece);
 }
 
 function buildVoxelGeometry(piece) {
@@ -1824,7 +1854,12 @@ function setGripFromPointer() {
   }
   const grip = gripCandidateFromTarget(target, { log: true, context: "click" });
   if (!grip?.valid) {
-    setStatus("forging.status.gripTooLarge");
+    if (grip?.blockedByAvatarCollision) {
+      playGripCollisionFailureAnimation(target.piece, grip);
+    } else {
+      playGripFailureDropAnimation(target.piece, grip);
+    }
+    setStatus(grip?.blockedByAvatarCollision ? "forging.status.gripBlocked" : "forging.status.gripTooLarge");
     return;
   }
   assignGripOffset(target.piece, grip.localPoint, grip.normal, grip.angle);
@@ -1857,6 +1892,135 @@ function assignGripOffset(piece, localPoint, normal = null, angle = 0) {
   piece.gripAngle = gripAngle;
   currentChainCode = "";
   chainCodeOutput.value = "";
+}
+
+function validateGripBindingAfterGeometryChange(piece) {
+  if (!piece?.gripOffset || !piece.gripNormal) return true;
+  if (isGripBindingStillValid(piece)) return true;
+  clearGripBinding(piece);
+  if (selectedPiece === piece) updateGripBindingMarker();
+  markEquipmentPreviewDirty();
+  currentChainCode = "";
+  chainCodeOutput.value = "";
+  return false;
+}
+
+function clearGripBinding(piece) {
+  if (!piece) return;
+  piece.gripOffset = null;
+  piece.gripNormal = null;
+  piece.gripAngle = 0;
+  if (piece.appearance) {
+    piece.appearance.gripOffset = null;
+    piece.appearance.gripNormal = null;
+    piece.appearance.gripAngle = 0;
+  }
+  for (const component of piece.components ?? []) {
+    component.gripOffset = null;
+    component.gripNormal = null;
+    component.gripAngle = 0;
+  }
+}
+
+function isGripBindingStillValid(piece) {
+  if (!piece?.gripOffset || !piece.gripNormal) return false;
+  const normal = piece.gripNormal.clone().normalize();
+  if (!Number.isFinite(normal.lengthSq()) || normal.lengthSq() < 0.5) return false;
+  let localPoint = piece.gripOffset.clone();
+  const normalAxis = dominantAxis(normal);
+  if (!localPointWithinPieceBounds(piece, localPoint, normalAxis)) return false;
+
+  if (piece.components || piece.appearance) {
+    return compoundGripBindingStillValid(piece, localPoint, normal, normalAxis);
+  }
+
+  const surface = gripSurfaceCellForLocalPoint(piece, localPoint, normal);
+  if (!surface) return false;
+  localPoint = surface.localPoint ?? localPoint;
+  if (!pointStillOnSurfacePlane(piece, localPoint, normal, normalAxis)) return false;
+  const region = gripSurfaceRegionForCell(piece, surface.cell, normal);
+  if (!region || !pointWithinGripRegion(localPoint, region)) return false;
+  const marker = buildGripPlacementMarkerGeometry(
+    piece,
+    localPoint,
+    normal,
+    avatarHandGripFootprint.x,
+    avatarHandGripFootprint.y,
+    piece.gripAngle ?? 0,
+  );
+  const fit = evaluateGripFit(avatarHandGripFootprint.x, avatarHandGripFootprint.y, region.sizeA, region.sizeB, {
+    normalAxis,
+    contactArea: marker.contactArea,
+    foldedArea: marker.foldedArea,
+    patchCount: marker.patchCount,
+  });
+  if (!fit.valid) return false;
+  if (gripCandidateCollidesWithAvatar(piece, localPoint, normal, piece.gripAngle ?? 0)) return false;
+  if (!localPoint.equals(piece.gripOffset)) piece.gripOffset.copy(localPoint);
+  return true;
+}
+
+function localPointWithinPieceBounds(piece, localPoint, normalAxis) {
+  const bounds = gripValidationBounds(piece);
+  if (!bounds) return false;
+  const epsilon = 0.002;
+  for (let axis = 0; axis < 3; axis++) {
+    const value = localPoint.getComponent(axis);
+    const min = bounds.min.getComponent(axis);
+    const max = bounds.max.getComponent(axis);
+    if (axis === normalAxis) continue;
+    if (value < min - epsilon || value > max + epsilon) return false;
+  }
+  return true;
+}
+
+function gripValidationBounds(piece) {
+  if (!piece) return null;
+  if (piece.components || piece.appearance) {
+    if (!piece.mesh.geometry.boundingBox) piece.mesh.geometry.computeBoundingBox();
+    return piece.mesh.geometry.boundingBox ?? null;
+  }
+  return new THREE.Box3(
+    piece.dims.clone().multiplyScalar(-0.5),
+    piece.dims.clone().multiplyScalar(0.5),
+  );
+}
+
+function pointStillOnSurfacePlane(piece, localPoint, normal, normalAxis) {
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const plane = sign > 0
+    ? piece.dims.getComponent(normalAxis) * 0.5
+    : -piece.dims.getComponent(normalAxis) * 0.5;
+  const cellSize = piece.dims.getComponent(normalAxis) / piece.grid[axisKey(normalAxis)];
+  const tolerance = Math.max(0.004, cellSize * 0.34);
+  return Math.abs(localPoint.getComponent(normalAxis) - plane) <= tolerance;
+}
+
+function compoundGripBindingStillValid(piece, localPoint, normal, normalAxis) {
+  if (!piece.mesh.geometry.boundingBox) piece.mesh.geometry.computeBoundingBox();
+  const box = piece.mesh.geometry.boundingBox;
+  if (!box) return false;
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const plane = sign > 0 ? box.max.getComponent(normalAxis) : box.min.getComponent(normalAxis);
+  if (Math.abs(localPoint.getComponent(normalAxis) - plane) > 0.018) return false;
+  const region = gripBoundingFaceRegion(piece, localPoint, normalAxis);
+  if (!region || !pointWithinGripRegion(localPoint, region)) return false;
+  return (
+    evaluateGripFit(avatarHandGripFootprint.x, avatarHandGripFootprint.y, region.sizeA, region.sizeB, { normalAxis }).valid &&
+    !gripCandidateCollidesWithAvatar(piece, localPoint, normal, piece.gripAngle ?? 0)
+  );
+}
+
+function pointWithinGripRegion(localPoint, region) {
+  const epsilon = 0.002;
+  const a = localPoint.getComponent(region.axes[0]);
+  const b = localPoint.getComponent(region.axes[1]);
+  return (
+    a >= region.minA - epsilon &&
+    a <= region.maxA + epsilon &&
+    b >= region.minB - epsilon &&
+    b <= region.maxB + epsilon
+  );
 }
 
 function compressFace(piece, normal, hitPoint) {
@@ -3742,6 +3906,277 @@ function createWorkbenchPreviewMesh(sourcePieces) {
   return mesh;
 }
 
+function gripPreviewSourcePieces(piece) {
+  return pieces.includes(piece) ? pieces : [piece];
+}
+
+function createGripFailurePreviewMesh(piece, grip, options = {}) {
+  if (!piece || !grip?.localPoint || !grip?.normal) return null;
+  const sourcePieces = options.sourcePieces ?? gripPreviewSourcePieces(piece);
+  const geometry = createWorkbenchPreviewGeometry(sourcePieces);
+  if (!geometry.getAttribute("position")?.count) {
+    geometry.dispose();
+    return null;
+  }
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.68,
+    metalness: 0.45,
+    transparent: true,
+    opacity: options.opacity ?? 0.74,
+    depthWrite: false,
+  });
+  if (options.tint) {
+    material.color.set(options.tint);
+    material.emissive.set(options.tint);
+    material.emissiveIntensity = options.emissiveIntensity ?? 0.25;
+  }
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = options.name ?? "gripFailurePreview";
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.renderOrder = 8;
+  const bounds = localBoundsForPieces(sourcePieces);
+  const origin = bounds.getCenter(new THREE.Vector3());
+  mesh.userData.grip = grip.localPoint.clone().add(piece.offset).sub(origin);
+  mesh.userData.gripNormal = grip.normal.clone();
+  mesh.userData.gripAngle = grip.angle ?? 0;
+  return mesh;
+}
+
+function playGripFailureDropAnimation(piece, grip) {
+  const { rightArm } = forgeAvatar?.userData?.limbs ?? {};
+  if (!rightArm || !piece || !grip) return;
+  const mesh = createGripFailurePreviewMesh(piece, grip);
+  if (!mesh) return;
+  const equipped = equipPreviewMeshOnAvatar({
+    avatar: forgeAvatar,
+    mesh,
+    currentMesh: null,
+  });
+  if (!equipped) return;
+  gripFailureAnimations.push({
+    mesh: equipped,
+    phase: "held",
+    elapsed: 0,
+    heldDuration: 0.18,
+    fallDuration: 1.05,
+    fadeDuration: 0.46,
+    targetY: -0.68,
+    velocity: new THREE.Vector3(0.18, -0.22, 0.1),
+    angularVelocity: new THREE.Vector3(2.4, 3.1, 1.5),
+    material: equipped.material,
+  });
+}
+
+function playGripCollisionFailureAnimation(piece, grip) {
+  const mesh = createGripFailurePreviewMesh(piece, grip, { opacity: 0.84 });
+  if (mesh) {
+    const equipped = equipPreviewMeshOnAvatar({
+      avatar: forgeAvatar,
+      mesh,
+      currentMesh: null,
+    });
+    if (equipped) {
+      gripCollisionAttemptAnimations.push({
+        mesh: equipped,
+        elapsed: 0,
+        holdDuration: 0.36,
+        fadeDuration: 0.42,
+        baseOpacity: 0.84,
+      });
+    }
+  }
+  playGripCollisionFlashAnimation(grip?.collision);
+}
+
+function updateGripFailureAnimations(dt) {
+  for (let index = gripFailureAnimations.length - 1; index >= 0; index--) {
+    const animation = gripFailureAnimations[index];
+    const mesh = animation.mesh;
+    if (!mesh) {
+      gripFailureAnimations.splice(index, 1);
+      continue;
+    }
+    animation.elapsed += Math.min(dt, 1 / 30);
+    if (animation.phase === "held") {
+      const pulse = 1 + Math.sin(animation.elapsed * 24) * 0.025;
+      mesh.scale.setScalar(pulse);
+      if (animation.elapsed >= animation.heldDuration) {
+        mesh.updateMatrixWorld(true);
+        scene.attach(mesh);
+        animation.phase = "fall";
+        animation.elapsed = 0;
+      }
+      continue;
+    }
+    if (animation.phase === "fall") {
+      animation.velocity.y -= 4.8 * dt;
+      mesh.position.addScaledVector(animation.velocity, dt);
+      mesh.rotation.x += animation.angularVelocity.x * dt;
+      mesh.rotation.y += animation.angularVelocity.y * dt;
+      mesh.rotation.z += animation.angularVelocity.z * dt;
+      const targetY = animation.targetY ?? forgeTopY + 0.04;
+      if (mesh.position.y <= targetY || animation.elapsed >= animation.fallDuration) {
+        mesh.position.y = Math.max(mesh.position.y, targetY);
+        animation.phase = "fade";
+        animation.elapsed = 0;
+      }
+      continue;
+    }
+    const opacity = THREE.MathUtils.clamp(0.74 * (1 - animation.elapsed / animation.fadeDuration), 0, 0.74);
+    setMeshOpacity(mesh, opacity);
+    mesh.scale.multiplyScalar(1 - Math.min(dt * 0.9, 0.08));
+    if (animation.elapsed >= animation.fadeDuration) {
+      mesh.parent?.remove(mesh);
+      disposePreviewMesh(mesh);
+      gripFailureAnimations.splice(index, 1);
+    }
+  }
+}
+
+function setMeshOpacity(mesh, opacity) {
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const material of materials) {
+    if (!material) continue;
+    material.transparent = true;
+    material.opacity = opacity;
+    material.depthWrite = false;
+  }
+}
+
+function updateGripCollisionAttemptAnimations(dt) {
+  for (let index = gripCollisionAttemptAnimations.length - 1; index >= 0; index--) {
+    const animation = gripCollisionAttemptAnimations[index];
+    const mesh = animation.mesh;
+    if (!mesh) {
+      gripCollisionAttemptAnimations.splice(index, 1);
+      continue;
+    }
+    animation.elapsed += Math.min(dt, 1 / 30);
+    const fadeElapsed = Math.max(0, animation.elapsed - animation.holdDuration);
+    const fadeProgress = THREE.MathUtils.clamp(fadeElapsed / animation.fadeDuration, 0, 1);
+    const pulse = 1 + Math.sin(animation.elapsed * 26) * 0.012 * (1 - fadeProgress);
+    mesh.scale.setScalar(pulse);
+    setMeshOpacity(mesh, animation.baseOpacity * (1 - fadeProgress));
+    if (fadeProgress >= 1) {
+      mesh.parent?.remove(mesh);
+      disposePreviewMesh(mesh);
+      gripCollisionAttemptAnimations.splice(index, 1);
+    }
+  }
+}
+
+function playGripCollisionFlashAnimation(collision) {
+  const patches = (collision?.collisions ?? [])
+    .map((entry) => collisionPatchFromSummary(entry.collisionPatch))
+    .filter(Boolean);
+  if (!patches.length) return;
+  for (const patch of patches) {
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xff2f2f,
+      transparent: true,
+      opacity: 0.62,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(patch.size.x, patch.size.y, patch.size.z), material);
+    mesh.name = "gripCollisionFlash";
+    mesh.position.copy(patch.center);
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(patch.axes[0], patch.axes[1], patch.axes[2]));
+    mesh.renderOrder = 20;
+    scene.add(mesh);
+    gripCollisionFlashAnimations.push({
+      mesh,
+      material,
+      baseScale: mesh.scale.clone(),
+      elapsed: 0,
+      duration: 0.78,
+    });
+  }
+}
+
+function updateGripCollisionFlashAnimations(dt) {
+  for (let index = gripCollisionFlashAnimations.length - 1; index >= 0; index--) {
+    const animation = gripCollisionFlashAnimations[index];
+    const mesh = animation.mesh;
+    if (!mesh) {
+      gripCollisionFlashAnimations.splice(index, 1);
+      continue;
+    }
+    animation.elapsed += Math.min(dt, 1 / 30);
+    const progress = THREE.MathUtils.clamp(animation.elapsed / animation.duration, 0, 1);
+    const pulse = 1 + Math.sin(progress * Math.PI * 5) * 0.12;
+    mesh.scale.copy(animation.baseScale).multiplyScalar(pulse);
+    animation.material.opacity = 0.58 * (1 - progress);
+    if (progress >= 1) {
+      scene.remove(mesh);
+      mesh.geometry.dispose();
+      animation.material.dispose();
+      gripCollisionFlashAnimations.splice(index, 1);
+    }
+  }
+}
+
+function flashAvatarCollisionParts(partNames) {
+  const names = new Set(partNames);
+  if (!names.size) return;
+  const active = new Set(avatarCollisionPartFlashAnimations.map((animation) => animation.mesh));
+  forgeAvatar.traverse((object) => {
+    if (!object.isMesh || active.has(object)) return;
+    if (!names.has(avatarCollisionMeshName(object))) return;
+    const originalMaterial = object.material;
+    const flashMaterial = originalMaterial.clone();
+    object.material = flashMaterial;
+    avatarCollisionPartFlashAnimations.push({
+      mesh: object,
+      originalMaterial,
+      flashMaterial,
+      originalColor: flashMaterial.color?.clone?.() ?? null,
+      originalEmissive: flashMaterial.emissive?.clone?.() ?? null,
+      elapsed: 0,
+      duration: 0.62,
+    });
+  });
+}
+
+function updateAvatarCollisionPartFlashAnimations(dt) {
+  const red = new THREE.Color(0xff2f2f);
+  for (let index = avatarCollisionPartFlashAnimations.length - 1; index >= 0; index--) {
+    const animation = avatarCollisionPartFlashAnimations[index];
+    const material = animation.flashMaterial;
+    animation.elapsed += Math.min(dt, 1 / 30);
+    const progress = THREE.MathUtils.clamp(animation.elapsed / animation.duration, 0, 1);
+    const pulse = Math.sin(progress * Math.PI * 4) * (1 - progress);
+    if (material.color && animation.originalColor) {
+      material.color.copy(animation.originalColor).lerp(red, Math.max(0, pulse) * 0.85);
+    }
+    if (material.emissive) {
+      material.emissive.copy(animation.originalEmissive ?? new THREE.Color(0x000000)).lerp(red, Math.max(0, pulse) * 0.7);
+      material.emissiveIntensity = Math.max(material.emissiveIntensity ?? 0, Math.max(0, pulse) * 0.75);
+    }
+    if (progress >= 1) {
+      animation.mesh.material = animation.originalMaterial;
+      material.dispose?.();
+      avatarCollisionPartFlashAnimations.splice(index, 1);
+    }
+  }
+}
+
+function box3FromSummary(summary) {
+  if (!summary?.min || !summary?.max) return null;
+  const box = new THREE.Box3(
+    new THREE.Vector3(summary.min.x, summary.min.y, summary.min.z),
+    new THREE.Vector3(summary.max.x, summary.max.y, summary.max.z),
+  );
+  return Number.isFinite(box.min.x + box.min.y + box.min.z + box.max.x + box.max.y + box.max.z) ? box : null;
+}
+
+function boxIsRenderable(box) {
+  const size = box.getSize(new THREE.Vector3());
+  return size.x > 0.001 && size.y > 0.001 && size.z > 0.001;
+}
+
 function createWorkbenchPreviewGeometry(sourcePieces) {
   if (sourcePieces.length === 1 && sourcePieces[0].appearance) {
     return buildAppearanceGeometry(sourcePieces[0].appearance);
@@ -3821,9 +4256,7 @@ function equipPreviewMeshOnAvatar({ avatar, mesh, currentMesh = null, scale = 1 
   const handBottomAnchor = new THREE.Vector3(0, -0.99, -0.02);
   mesh.scale.setScalar(scale);
   const gripBasis = gripSurfaceBasis(gripNormal, mesh.userData.gripAngle ?? 0);
-  const handApproach = new THREE.Vector3(0, -1, 0);
-  const handFront = new THREE.Vector3(0, 0, -1);
-  const handSide = new THREE.Vector3().crossVectors(handFront, handApproach).normalize();
+  const { handSide, handFront, handApproach } = avatarPalmDownGripBasis();
   const sourceMatrix = new THREE.Matrix4().makeBasis(gripBasis.side, gripBasis.front, gripBasis.approach);
   const targetMatrix = new THREE.Matrix4().makeBasis(handSide, handFront, handApproach);
   mesh.quaternion.setFromRotationMatrix(targetMatrix.multiply(sourceMatrix.invert()));
@@ -3831,6 +4264,13 @@ function equipPreviewMeshOnAvatar({ avatar, mesh, currentMesh = null, scale = 1 
   mesh.position.copy(handBottomAnchor).sub(gripOffset);
   rightArm.add(mesh);
   return mesh;
+}
+
+function avatarPalmDownGripBasis() {
+  const handApproach = new THREE.Vector3(0, 1, 0);
+  const handFront = new THREE.Vector3(0, 0, -1);
+  const handSide = new THREE.Vector3().crossVectors(handFront, handApproach).normalize();
+  return { handSide, handFront, handApproach };
 }
 
 function disposePreviewMesh(mesh) {
@@ -4144,16 +4584,28 @@ function gripCandidateFromTarget(target, options = {}) {
   if (!target?.piece) return null;
   const { piece, localPoint, normal } = target;
   const normalAxis = dominantAxis(normal);
-  const hitCell = piece.components ? null : surfaceCellFromLocalPoint(piece, localPoint, normal);
-  if (!piece.components && (!hitCell || !isExposedSurfaceCell(piece, hitCell, normal))) return null;
+  const surface = piece.components ? null : gripSurfaceCellForLocalPoint(piece, localPoint, normal);
+  if (!piece.components && !surface) return null;
+  const surfaceLocalPoint = surface?.localPoint ?? localPoint;
   const footprintA = avatarHandGripFootprint.x;
   const footprintB = avatarHandGripFootprint.y;
   const region = piece.components
-    ? gripBoundingFaceRegion(piece, localPoint, normalAxis)
-    : gripSurfaceRegionForCell(piece, hitCell, normal);
+    ? gripBoundingFaceRegion(piece, surfaceLocalPoint, normalAxis)
+    : gripSurfaceRegionForCell(piece, surface.cell, normal);
   if (!region) return null;
   const angle = currentGripGestureAngle();
-  const fit = evaluateGripFit(footprintA, footprintB, region.sizeA, region.sizeB);
+  const gripLocalPoint = gripLocalPointForRegion(surfaceLocalPoint, normal, region, footprintA, footprintB);
+  const marker = buildGripPlacementMarkerGeometry(piece, gripLocalPoint, normal, footprintA, footprintB, angle);
+  const fit = evaluateGripFit(footprintA, footprintB, region.sizeA, region.sizeB, {
+    normalAxis,
+    contactArea: marker.contactArea,
+    foldedArea: marker.foldedArea,
+    patchCount: marker.patchCount,
+  });
+  const collision = fit.valid ? gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle) : null;
+  if (collision) collision.angle = angle;
+  const collidesWithAvatar = Boolean(collision?.collides);
+  const blockedByAvatarCollision = fit.valid && collidesWithAvatar;
   if (options.log) logGripFitMetrics({
     context: options.context ?? "grip",
     piece,
@@ -4161,49 +4613,452 @@ function gripCandidateFromTarget(target, options = {}) {
     normalAxis,
     region,
     fit,
+    collision,
   });
-  const gripLocalPoint = gripLocalPointForRegion(localPoint, normal, region, footprintA, footprintB);
   return {
-    valid: fit.valid,
+    valid: fit.valid && !blockedByAvatarCollision,
+    reason: blockedByAvatarCollision ? "avatar-collision" : fit.reason,
+    collidesWithAvatar,
+    blockedByAvatarCollision,
+    collision: collision ?? emptyGripCollisionReport(),
     localPoint: gripLocalPoint,
     normal: normal.clone(),
     angle,
-    marker: buildGripPlacementMarkerGeometry(piece, gripLocalPoint, normal, footprintA, footprintB, angle),
+    marker,
   };
 }
 
-function gripFootprintCoversRegion(footprintA, footprintB, regionA, regionB) {
-  return evaluateGripFit(footprintA, footprintB, regionA, regionB).valid;
+function gripCandidateCollidesWithAvatar(piece, gripLocalPoint, normal, angle = 0) {
+  return gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle).collides;
 }
 
-function evaluateGripFit(footprintA, footprintB, regionA, regionB) {
+function emptyGripCollisionReport() {
+  return {
+    collides: false,
+    collisionCount: 0,
+    ignoredHandCollisionCount: 0,
+    collisionParts: [],
+    collisions: [],
+  };
+}
+
+function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle = 0) {
+  const { rightArm } = forgeAvatar?.userData?.limbs ?? {};
+  if (!piece || !gripLocalPoint || !normal || !rightArm) return emptyGripCollisionReport();
+
+  forgeAvatar.updateMatrixWorld(true);
+  rightArm.updateMatrixWorld(true);
+
+  const sourcePieces = gripPreviewSourcePieces(piece);
+  const bounds = localBoundsForPieces(sourcePieces);
+  const origin = bounds.getCenter(new THREE.Vector3());
+  const gripOffset = gripLocalPoint.clone().add(piece.offset).sub(origin);
+  const itemMatrixWorld = equippedItemMatrixWorldForGrip(rightArm, gripOffset, normal, angle);
+  const handContactBox = gripHandContactBox(rightArm);
+  const avatarBoxes = avatarBodyCollisionBoxes();
+  if (!avatarBoxes.length) return emptyGripCollisionReport();
+  const avatarCollisionParts = [...new Set(avatarBoxes.map((box) => box.name))];
+
+  const collisions = [];
+  const collisionPartSet = new Set();
+  let collisionCount = 0;
+  let ignoredHandCollisionCount = 0;
+  const maxLoggedPairs = 12;
+  for (const itemBox of equippedItemCollisionBoxes(sourcePieces, origin, itemMatrixWorld)) {
+    for (const avatarBox of avatarBoxes) {
+      if (!orientedBoxIntersectsOrientedBox(itemBox, avatarBox.box)) continue;
+      const collisionPatch = collisionPatchOnItem(itemBox, avatarBox.box);
+      if (collisionPatch && collisionPatchTouchesHandContact(collisionPatch, handContactBox)) {
+        ignoredHandCollisionCount += 1;
+        continue;
+      }
+      collisionCount += 1;
+      collisionPartSet.add(avatarBox.name);
+      if (collisions.length < maxLoggedPairs) {
+        collisions.push({
+          avatarPart: avatarBox.name,
+          itemBox: summarizeBox3(itemBox),
+          avatarBox: summarizeBox3(avatarBox.box),
+          intersectionBox: summarizeBox3(intersectionBox3(itemBox.aabb, avatarBox.box.aabb)),
+          collisionPatch: summarizeCollisionPatch(collisionPatch),
+        });
+      }
+    }
+  }
+  return {
+    collides: collisionCount > 0,
+    collisionCount,
+    ignoredHandCollisionCount,
+    collisionParts: [...collisionPartSet],
+    avatarCollisionParts,
+    collisions,
+  };
+}
+
+function equippedItemMatrixWorldForGrip(rightArm, gripOffset, gripNormal, gripAngle = 0) {
+  const handBottomAnchor = new THREE.Vector3(0, -0.99, -0.02);
+  const gripBasis = gripSurfaceBasis(gripNormal, gripAngle);
+  const { handSide, handFront, handApproach } = avatarPalmDownGripBasis();
+  const sourceMatrix = new THREE.Matrix4().makeBasis(gripBasis.side, gripBasis.front, gripBasis.approach);
+  const targetMatrix = new THREE.Matrix4().makeBasis(handSide, handFront, handApproach);
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(targetMatrix.multiply(sourceMatrix.invert()));
+  const gripOffsetInArm = gripOffset.clone().applyQuaternion(quaternion);
+  const position = handBottomAnchor.clone().sub(gripOffsetInArm);
+  const localMatrix = new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1));
+  return rightArm.matrixWorld.clone().multiply(localMatrix);
+}
+
+function equippedItemCollisionBoxes(sourcePieces, origin, itemMatrixWorld) {
+  const boxes = [];
+  for (const piece of sourcePieces) {
+    for (const component of componentsFromPiece(piece)) {
+      const componentCenter = piece.offset.clone().add(component.offset ?? new THREE.Vector3()).sub(origin);
+      if (componentIsFullySolid(component)) {
+        boxes.push(transformedLocalBox(componentCenter, component.dims, itemMatrixWorld));
+        continue;
+      }
+      const cells = component.solidCells ?? solidCellsFor(component);
+      for (const cell of cells) {
+        boxes.push(transformedLocalVoxelCellBox(component, componentCenter, cell, itemMatrixWorld));
+      }
+    }
+  }
+  return boxes;
+}
+
+function transformedLocalBox(center, dims, matrixWorld) {
+  return orientedBoxFromLocalBox(center, dims, matrixWorld);
+}
+
+function orientedBoxFromLocalBox(center, dims, matrixWorld) {
+  const halfSize = dims.clone().multiplyScalar(0.5);
+  const worldCenter = center.clone().applyMatrix4(matrixWorld);
+  const rotation = new THREE.Matrix4().extractRotation(matrixWorld);
+  const axes = [
+    new THREE.Vector3(1, 0, 0).applyMatrix4(rotation).normalize(),
+    new THREE.Vector3(0, 1, 0).applyMatrix4(rotation).normalize(),
+    new THREE.Vector3(0, 0, 1).applyMatrix4(rotation).normalize(),
+  ];
+  const corners = orientedBoxCorners(worldCenter, halfSize, axes);
+  return {
+    center: worldCenter,
+    halfSize,
+    axes,
+    corners,
+    aabb: new THREE.Box3().setFromPoints(corners),
+  };
+}
+
+function orientedBoxFromCenterSizeAxes(center, size, axes) {
+  const halfSize = size.clone().multiplyScalar(0.5);
+  const normalizedAxes = axes.map((axis) => axis.clone().normalize());
+  const corners = orientedBoxCorners(center, halfSize, normalizedAxes);
+  return {
+    center: center.clone(),
+    halfSize,
+    axes: normalizedAxes,
+    corners,
+    aabb: new THREE.Box3().setFromPoints(corners),
+  };
+}
+
+function orientedBoxCorners(center, halfSize, axes) {
+  const corners = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        corners.push(center.clone()
+          .addScaledVector(axes[0], sx * halfSize.x)
+          .addScaledVector(axes[1], sy * halfSize.y)
+          .addScaledVector(axes[2], sz * halfSize.z));
+      }
+    }
+  }
+  return corners;
+}
+
+function orientedBoxIntersectsBox3(obb, box) {
+  if (!obb?.corners?.length || !box) return false;
+  if (!boxesOverlap(obb.aabb, box)) return false;
+  const boxCorners = box3Corners(box);
+  const axes = [
+    ...obb.axes,
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(0, 0, 1),
+  ];
+  const worldAxes = axes.slice(3);
+  for (const axisA of obb.axes) {
+    for (const axisB of worldAxes) {
+      const cross = new THREE.Vector3().crossVectors(axisA, axisB);
+      if (cross.lengthSq() > 1e-8) axes.push(cross.normalize());
+    }
+  }
+  return axes.every((axis) => projectedIntervalsOverlap(projectPoints(obb.corners, axis), projectPoints(boxCorners, axis)));
+}
+
+function orientedBoxIntersectsOrientedBox(a, b) {
+  if (!a?.corners?.length || !b?.corners?.length) return false;
+  if (!boxesOverlap(a.aabb, b.aabb)) return false;
+  const axes = [...a.axes, ...b.axes];
+  for (const axisA of a.axes) {
+    for (const axisB of b.axes) {
+      const cross = new THREE.Vector3().crossVectors(axisA, axisB);
+      if (cross.lengthSq() > 1e-8) axes.push(cross.normalize());
+    }
+  }
+  return axes.every((axis) => projectedIntervalsOverlap(projectPoints(a.corners, axis), projectPoints(b.corners, axis)));
+}
+
+function gripHandContactBox(rightArm) {
+  if (!rightArm) return null;
+  // This is the tolerated hand contact envelope around the avatar palm.
+  // It prevents the held object itself from being treated as avatar collision.
+  return orientedBoxFromLocalBox(
+    new THREE.Vector3(0, -0.9, -0.04),
+    new THREE.Vector3(0.64, 0.62, 0.64),
+    rightArm.matrixWorld,
+  );
+}
+
+function collisionPatchTouchesHandContact(patch, handContactBox) {
+  if (!patch || !handContactBox) return false;
+  const patchBox = orientedBoxFromCenterSizeAxes(patch.center, patch.size, patch.axes);
+  return orientedBoxIntersectsOrientedBox(patchBox, handContactBox);
+}
+
+function collisionPatchOnItem(itemBox, avatarBox) {
+  if (!itemBox?.corners?.length || !avatarBox?.corners?.length) return null;
+  const localCenter = new THREE.Vector3();
+  const size = new THREE.Vector3();
+  for (let index = 0; index < 3; index++) {
+    const axis = itemBox.axes[index];
+    const itemCenterProjection = itemBox.center.dot(axis);
+    const itemHalf = itemBox.halfSize.getComponent(index);
+    const itemMin = itemCenterProjection - itemHalf;
+    const itemMax = itemCenterProjection + itemHalf;
+    const avatarProjection = projectPoints(avatarBox.corners, axis);
+    const min = Math.max(itemMin, avatarProjection.min);
+    const max = Math.min(itemMax, avatarProjection.max);
+    if (max <= min) return null;
+    const fullSize = itemHalf * 2;
+    const overlapSize = max - min;
+    const minVisibleSize = Math.min(0.035, fullSize);
+    size.setComponent(index, Math.min(fullSize, Math.max(overlapSize, minVisibleSize)));
+    localCenter.setComponent(index, (min + max) * 0.5 - itemCenterProjection);
+  }
+  const center = itemBox.center.clone()
+    .addScaledVector(itemBox.axes[0], localCenter.x)
+    .addScaledVector(itemBox.axes[1], localCenter.y)
+    .addScaledVector(itemBox.axes[2], localCenter.z);
+  return {
+    center,
+    size,
+    axes: itemBox.axes.map((axis) => axis.clone()),
+  };
+}
+
+function summarizeCollisionPatch(patch) {
+  if (!patch) return null;
+  return {
+    center: summarizeVector3(patch.center),
+    size: summarizeVector3(patch.size),
+    axes: patch.axes.map(summarizeVector3),
+  };
+}
+
+function collisionPatchFromSummary(summary) {
+  if (!summary?.center || !summary?.size || !Array.isArray(summary.axes) || summary.axes.length !== 3) return null;
+  const center = vector3FromSummary(summary.center);
+  const size = vector3FromSummary(summary.size);
+  const axes = summary.axes.map(vector3FromSummary);
+  if (!center || !size || axes.some((axis) => !axis)) return null;
+  if (size.x <= 0.001 || size.y <= 0.001 || size.z <= 0.001) return null;
+  return { center, size, axes };
+}
+
+function summarizeVector3(vector) {
+  return {
+    x: Number(vector.x.toFixed(4)),
+    y: Number(vector.y.toFixed(4)),
+    z: Number(vector.z.toFixed(4)),
+  };
+}
+
+function vector3FromSummary(summary) {
+  if (!summary) return null;
+  const vector = new THREE.Vector3(Number(summary.x), Number(summary.y), Number(summary.z));
+  return Number.isFinite(vector.x + vector.y + vector.z) ? vector : null;
+}
+
+function box3Corners(box) {
+  return [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+  ];
+}
+
+function projectPoints(points, axis) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    const value = point.dot(axis);
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return { min, max };
+}
+
+function projectedIntervalsOverlap(a, b) {
+  const epsilon = 0.0005;
+  return a.min <= b.max - epsilon && a.max >= b.min + epsilon;
+}
+
+function intersectionBox3(a, b) {
+  return new THREE.Box3(
+    new THREE.Vector3(
+      Math.max(a.min.x, b.min.x),
+      Math.max(a.min.y, b.min.y),
+      Math.max(a.min.z, b.min.z),
+    ),
+    new THREE.Vector3(
+      Math.min(a.max.x, b.max.x),
+      Math.min(a.max.y, b.max.y),
+      Math.min(a.max.z, b.max.z),
+    ),
+  );
+}
+
+function transformedLocalVoxelCellBox(component, componentCenter, cell, matrixWorld) {
+  const [x, y, z] = cell;
+  const { dims, grid } = component;
+  const cellSize = new THREE.Vector3(dims.x / grid.x, dims.y / grid.y, dims.z / grid.z);
+  const center = new THREE.Vector3(
+    componentCenter.x - dims.x * 0.5 + x * cellSize.x,
+    componentCenter.y - dims.y * 0.5 + y * cellSize.y,
+    componentCenter.z - dims.z * 0.5 + z * cellSize.z,
+  ).add(cellSize.clone().multiplyScalar(0.5));
+  return orientedBoxFromLocalBox(center, cellSize, matrixWorld);
+}
+
+function avatarBodyCollisionBoxes() {
+  const boxes = [];
+  forgeAvatar.updateMatrixWorld(true);
+  forgeAvatar.traverse((object) => {
+    if (!object.isMesh || !object.visible || shouldIgnoreAvatarCollisionMesh(object)) return;
+    if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+    const box = object.geometry.boundingBox?.clone?.();
+    if (!box) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    boxes.push({
+      name: avatarCollisionMeshName(object),
+      box: orientedBoxFromLocalBox(center, size, object.matrixWorld),
+    });
+  });
+  return boxes;
+}
+
+function avatarCollisionMeshName(object) {
+  for (let current = object; current; current = current.parent) {
+    if (current.name) return current.name;
+  }
+  return "avatarPart";
+}
+
+function shouldIgnoreAvatarCollisionMesh(object) {
+  const ignoredNames = new Set([
+    "leftArm",
+    "rightArm",
+    "equippedTool",
+    "heldBlock",
+    "equippedForgedItem",
+    "gripHand",
+    "gripFailurePreview",
+    "gripCollisionGhost",
+    "gripCollisionPosePreview",
+    "gripCollisionFlash",
+    "faceMarker",
+    "gripBindingMarker",
+  ]);
+  for (let current = object; current; current = current.parent) {
+    if (current.userData?.ignoreAvatarCollision) return true;
+    if (ignoredNames.has(current.name)) return true;
+  }
+  return false;
+}
+
+function gripFootprintCoversRegion(footprintA, footprintB, regionA, regionB, options = {}) {
+  return evaluateGripFit(footprintA, footprintB, regionA, regionB, options).valid;
+}
+
+function evaluateGripFit(footprintA, footprintB, regionA, regionB, options = {}) {
   const epsilon = 0.0005;
   const footprintArea = footprintA * footprintB;
   const regionArea = regionA * regionB;
   const palmSpan = Math.max(footprintA, footprintB);
   const itemNarrowSpan = Math.min(regionA, regionB);
   const areaFits = regionArea <= footprintArea + epsilon;
-  const narrowSpanFits = itemNarrowSpan <= palmSpan + epsilon;
+  const narrowSpanAllowed = true;
+  const narrowSpanFits = narrowSpanAllowed && itemNarrowSpan <= palmSpan + epsilon;
+  const topOrBottomFace = options.normalAxis === 1;
+  const contactArea = Math.max(0, Number(options.contactArea) || 0);
+  const foldedArea = Math.max(0, Number(options.foldedArea) || 0);
+  const patchCount = Math.max(0, Number(options.patchCount) || 0);
+  const hasContactArea = Number.isFinite(Number(options.contactArea)) && patchCount > 0;
+  const contactCoverage = footprintArea > 0 ? THREE.MathUtils.clamp(contactArea / footprintArea, 0, 1) : 0;
+  const contactValid = !hasContactArea || contactCoverage >= minimumGripContactCoverage;
+  const shapeValid = areaFits || narrowSpanFits;
+  const shapeReason = areaFits ? "area-fits" : narrowSpanFits ? (topOrBottomFace ? "top-face-edge-fits" : "narrow-span-fits") : "area-and-span-too-large";
   return {
-    valid: areaFits || narrowSpanFits,
-    reason: areaFits ? "area-fits" : narrowSpanFits ? "narrow-span-fits" : "area-and-span-too-large",
+    valid: shapeValid && contactValid,
+    reason: !shapeValid ? shapeReason : contactValid ? shapeReason : "contact-area-too-small",
     palmWidth: footprintA,
     palmHeight: footprintB,
     palmArea: footprintArea,
     palmSpan,
+    narrowSpanAllowed,
+    topOrBottomFace,
     itemWidth: regionA,
     itemHeight: regionB,
     itemArea: regionArea,
     itemNarrowSpan,
+    gripContactArea: contactArea,
+    gripContactCoverage: contactCoverage,
+    minGripContactCoverage: minimumGripContactCoverage,
+    foldedGripArea: foldedArea,
+    gripPatchCount: patchCount,
     epsilon,
   };
 }
 
-function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit }) {
+function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit, collision = null }) {
+  const collisionParts = collision?.collisionParts ?? [];
+  const collidesWithAvatar = Boolean(collision?.collides);
+  const blockedByAvatarCollision = fit.valid && collidesWithAvatar;
   const metrics = {
     context,
-    valid: fit.valid,
-    reason: fit.reason,
+    valid: fit.valid && !blockedByAvatarCollision,
+    reason: blockedByAvatarCollision ? "avatar-collision" : fit.reason,
+    fitValid: fit.valid,
+    fitReason: fit.reason,
+    collidesWithAvatar,
+    blockedByAvatarCollision,
+    collisionEvaluated: Boolean(collision),
+    gripAngle: Number((collision?.angle ?? 0).toFixed(4)),
+    gripAngleDegrees: Math.round(THREE.MathUtils.radToDeg(collision?.angle ?? 0)),
+    collisionCount: collision?.collisionCount ?? 0,
+    ignoredHandCollisionCount: collision?.ignoredHandCollisionCount ?? 0,
+    collisionParts,
+    avatarCollisionParts: collision?.avatarCollisionParts ?? [],
+    firstCollisionPart: collisionParts[0] ?? null,
+    collisionPairs: collision?.collisions ?? [],
     palmArea: Number(fit.palmArea.toFixed(6)),
     itemArea: Number(fit.itemArea.toFixed(6)),
     palmWidth: Number(fit.palmWidth.toFixed(4)),
@@ -4212,6 +5067,13 @@ function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit }) 
     itemHeight: Number(fit.itemHeight.toFixed(4)),
     palmSpan: Number(fit.palmSpan.toFixed(4)),
     itemNarrowSpan: Number(fit.itemNarrowSpan.toFixed(4)),
+    gripContactArea: Number((fit.gripContactArea ?? 0).toFixed(6)),
+    gripContactCoverage: Number((fit.gripContactCoverage ?? 0).toFixed(4)),
+    minGripContactCoverage: Number((fit.minGripContactCoverage ?? 0).toFixed(4)),
+    foldedGripArea: Number((fit.foldedGripArea ?? 0).toFixed(6)),
+    gripPatchCount: fit.gripPatchCount ?? 0,
+    narrowSpanAllowed: fit.narrowSpanAllowed,
+    topOrBottomFace: fit.topOrBottomFace,
     pieceDims: {
       x: Number(piece.dims.x.toFixed(4)),
       y: Number(piece.dims.y.toFixed(4)),
@@ -4227,6 +5089,24 @@ function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit }) 
   };
   window.NicechunkForgingGripDebug = metrics;
   console.info("[NiceChunk Forging Grip]", metrics);
+  if (collidesWithAvatar) console.warn("[NiceChunk Forging Grip Collision]", metrics);
+}
+
+function summarizeBox3(box) {
+  const targetBox = box?.isBox3 ? box : box?.aabb;
+  if (!targetBox) return null;
+  return {
+    min: {
+      x: Number(targetBox.min.x.toFixed(4)),
+      y: Number(targetBox.min.y.toFixed(4)),
+      z: Number(targetBox.min.z.toFixed(4)),
+    },
+    max: {
+      x: Number(targetBox.max.x.toFixed(4)),
+      y: Number(targetBox.max.y.toFixed(4)),
+      z: Number(targetBox.max.z.toFixed(4)),
+    },
+  };
 }
 
 function gripSurfaceRegionForCell(piece, hitCell, normal) {
@@ -4344,27 +5224,183 @@ function gripLocalPointForRegion(localPoint, normal, region, footprintA, footpri
 }
 
 function buildGripPlacementMarkerGeometry(piece, localPoint, normal, footprintA = avatarHandGripFootprint.x, footprintB = avatarHandGripFootprint.y, angle = 0) {
-  const normalAxis = dominantAxis(normal);
-  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
-  const basis = gripSurfaceBasis(normal, angle);
-  const center = localPoint.clone();
-  center.setComponent(normalAxis, center.getComponent(normalAxis) + sign * 0.012);
-  const halfA = footprintA * 0.5;
-  const halfB = footprintB * 0.5;
-  const corners = [
-    [-halfA, -halfB],
-    [halfA, -halfB],
-    [halfA, halfB],
-    [-halfA, halfB],
-  ].map(([a, b]) => center.clone()
-    .add(basis.side.clone().multiplyScalar(a))
-    .add(basis.front.clone().multiplyScalar(b))
-    .toArray());
+  const contact = buildFoldedGripContactPatches(piece, localPoint, normal, footprintA, footprintB, angle);
+  const voxelContact = voxelGripContactAreaForPatches(piece, contact.patches);
+  if (voxelContact) {
+    contact.primaryArea = voxelContact.primaryArea;
+    contact.foldedArea = voxelContact.foldedArea;
+    contact.contactArea = voxelContact.contactArea;
+  }
   const surface = [];
   const lines = [];
-  pushFace(surface, [], corners, [normal.x, normal.y, normal.z]);
-  pushLineLoop(lines, corners);
-  return { surface, lines };
+  for (const patch of contact.patches) {
+    const corners = patch.corners.map((corner) => corner.toArray());
+    pushFace(surface, [], corners, [patch.normal.x, patch.normal.y, patch.normal.z]);
+    pushLineLoop(lines, corners);
+  }
+  return {
+    surface,
+    lines,
+    contactArea: contact.contactArea,
+    primaryArea: contact.primaryArea,
+    foldedArea: contact.foldedArea,
+    patchCount: contact.patches.length,
+  };
+}
+
+function buildFoldedGripContactPatches(piece, localPoint, normal, footprintA, footprintB, angle = 0) {
+  const basis = gripSurfaceBasis(normal, angle);
+  const box = gripContactBounds(piece);
+  if (!box) return flatGripContactFallback(localPoint, normal, footprintA, footprintB, basis);
+
+  const center = localPoint.clone();
+  const normalProjection = center.dot(basis.approach);
+  const sideRange = gripAxisRangeForBox(box, basis.side, center);
+  const frontRange = gripAxisRangeForBox(box, basis.front, center);
+  const depthRange = gripAxisRangeForBox(box, basis.approach, center);
+  const halfA = footprintA * 0.5;
+  const halfB = footprintB * 0.5;
+  const requestedU = { min: -halfA, max: halfA };
+  const requestedV = { min: -halfB, max: halfB };
+  const primaryU = intersectRanges(requestedU, sideRange);
+  const primaryV = intersectRanges(requestedV, frontRange);
+  const maxFoldDepth = Math.max(0, normalProjection - depthRange.min);
+  const visualOffset = gripContactVisualOffset;
+  const patches = [];
+  let primaryArea = 0;
+  let foldedArea = 0;
+
+  const addPatch = (corners, patchNormal, area, folded = false) => {
+    if (area <= 0.000001) return;
+    patches.push({
+      corners: corners.map((corner) => corner.clone().add(patchNormal.clone().multiplyScalar(visualOffset))),
+      normal: patchNormal.clone().normalize(),
+      area,
+      folded,
+    });
+    if (folded) foldedArea += area;
+    else primaryArea += area;
+  };
+
+  if (primaryU && primaryV) {
+    const corners = gripPatchCornersOnPlane(center, basis.side, basis.front, primaryU.min, primaryU.max, primaryV.min, primaryV.max);
+    addPatch(corners, basis.approach, rangeSize(primaryU) * rangeSize(primaryV), false);
+  }
+
+  if (primaryV && maxFoldDepth > 0) {
+    const lowerOverflow = Math.max(0, (primaryU?.min ?? sideRange.min) - requestedU.min);
+    const upperOverflow = Math.max(0, requestedU.max - (primaryU?.max ?? sideRange.max));
+    if (lowerOverflow > 0) {
+      const depth = Math.min(lowerOverflow, maxFoldDepth);
+      const edge = primaryU?.min ?? sideRange.min;
+      const corners = gripFoldPatchCorners(center, basis, "side", edge, -1, primaryV.min, primaryV.max, depth);
+      addPatch(corners, basis.side.clone().multiplyScalar(-1), depth * rangeSize(primaryV), true);
+    }
+    if (upperOverflow > 0) {
+      const depth = Math.min(upperOverflow, maxFoldDepth);
+      const edge = primaryU?.max ?? sideRange.max;
+      const corners = gripFoldPatchCorners(center, basis, "side", edge, 1, primaryV.min, primaryV.max, depth);
+      addPatch(corners, basis.side, depth * rangeSize(primaryV), true);
+    }
+  }
+
+  if (primaryU && maxFoldDepth > 0) {
+    const lowerOverflow = Math.max(0, (primaryV?.min ?? frontRange.min) - requestedV.min);
+    const upperOverflow = Math.max(0, requestedV.max - (primaryV?.max ?? frontRange.max));
+    if (lowerOverflow > 0) {
+      const depth = Math.min(lowerOverflow, maxFoldDepth);
+      const edge = primaryV?.min ?? frontRange.min;
+      const corners = gripFoldPatchCorners(center, basis, "front", edge, -1, primaryU.min, primaryU.max, depth);
+      addPatch(corners, basis.front.clone().multiplyScalar(-1), depth * rangeSize(primaryU), true);
+    }
+    if (upperOverflow > 0) {
+      const depth = Math.min(upperOverflow, maxFoldDepth);
+      const edge = primaryV?.max ?? frontRange.max;
+      const corners = gripFoldPatchCorners(center, basis, "front", edge, 1, primaryU.min, primaryU.max, depth);
+      addPatch(corners, basis.front, depth * rangeSize(primaryU), true);
+    }
+  }
+
+  if (!patches.length) return flatGripContactFallback(localPoint, normal, footprintA, footprintB, basis);
+  return {
+    patches,
+    primaryArea,
+    foldedArea,
+    contactArea: primaryArea + foldedArea,
+  };
+}
+
+function flatGripContactFallback(localPoint, normal, footprintA, footprintB, basis) {
+  const halfA = footprintA * 0.5;
+  const halfB = footprintB * 0.5;
+  const corners = gripPatchCornersOnPlane(localPoint, basis.side, basis.front, -halfA, halfA, -halfB, halfB)
+    .map((corner) => corner.add(basis.approach.clone().multiplyScalar(gripContactVisualOffset)));
+  const area = footprintA * footprintB;
+  return {
+    patches: [{ corners, normal: normal.clone().normalize(), area, folded: false }],
+    primaryArea: area,
+    foldedArea: 0,
+    contactArea: area,
+  };
+}
+
+function gripContactBounds(piece) {
+  if (!piece) return null;
+  if (piece.mesh?.geometry) {
+    if (!piece.mesh.geometry.boundingBox) piece.mesh.geometry.computeBoundingBox();
+    if (piece.mesh.geometry.boundingBox) return piece.mesh.geometry.boundingBox;
+  }
+  if (piece.dims) {
+    return new THREE.Box3(
+      piece.dims.clone().multiplyScalar(-0.5),
+      piece.dims.clone().multiplyScalar(0.5),
+    );
+  }
+  return null;
+}
+
+function gripAxisRangeForBox(box, axis, center) {
+  const projection = projectPoints(box3Corners(box), axis);
+  const centerProjection = center.dot(axis);
+  return {
+    min: projection.min - centerProjection,
+    max: projection.max - centerProjection,
+  };
+}
+
+function intersectRanges(a, b) {
+  const min = Math.max(a.min, b.min);
+  const max = Math.min(a.max, b.max);
+  return max > min ? { min, max } : null;
+}
+
+function rangeSize(range) {
+  return Math.max(0, range.max - range.min);
+}
+
+function gripPatchCornersOnPlane(center, side, front, uMin, uMax, vMin, vMax) {
+  return [
+    [uMin, vMin],
+    [uMax, vMin],
+    [uMax, vMax],
+    [uMin, vMax],
+  ].map(([u, v]) => center.clone()
+    .add(side.clone().multiplyScalar(u))
+    .add(front.clone().multiplyScalar(v)));
+}
+
+function gripFoldPatchCorners(center, basis, foldAxis, edge, direction, tangentMin, tangentMax, depth) {
+  const tangent = foldAxis === "side" ? basis.front : basis.side;
+  const edgeAxis = foldAxis === "side" ? basis.side : basis.front;
+  const edgePoint = center.clone().add(edgeAxis.clone().multiplyScalar(edge));
+  return [
+    [0, tangentMin],
+    [0, tangentMax],
+    [depth, tangentMax],
+    [depth, tangentMin],
+  ].map(([foldDepth, tangentOffset]) => edgePoint.clone()
+    .add(tangent.clone().multiplyScalar(tangentOffset))
+    .add(basis.approach.clone().multiplyScalar(-foldDepth)));
 }
 
 function buildGripPointMarkerGeometry(piece, localPoint, normal) {
@@ -4478,6 +5514,146 @@ function positionsGeometry(positions) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   return geometry;
+}
+
+function gripSurfaceCellForLocalPoint(piece, localPoint, normal) {
+  const direct = surfaceCellFromLocalPoint(piece, localPoint, normal);
+  if (direct && isExposedSurfaceCell(piece, direct, normal)) {
+    return {
+      cell: direct,
+      localPoint: surfacePointForCell(piece, direct, normal, localPoint),
+      source: "direct",
+    };
+  }
+  return nearestExposedSurfaceCell(piece, localPoint, normal);
+}
+
+function nearestExposedSurfaceCell(piece, localPoint, normal) {
+  if (!piece?.solid || !localPoint || !normal) return null;
+  const normalAxis = dominantAxis(normal);
+  const tangentAxes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  const dims = [piece.dims.x, piece.dims.y, piece.dims.z];
+  const grid = [piece.grid.x, piece.grid.y, piece.grid.z];
+  const cellSize = dims.map((size, axis) => size / grid[axis]);
+  const searchRadius = Math.max(avatarHandGripFootprint.x, avatarHandGripFootprint.y) * 0.72;
+  const searchRadiusSq = searchRadius * searchRadius;
+  const normalTolerance = Math.max(cellSize[normalAxis] * 2.2, avatarHandGripSize.z * 0.55);
+  const cells = piece.solidCells ?? solidCellsFor(piece);
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const cell of cells) {
+    if (!isExposedSurfaceCell(piece, cell, normal)) continue;
+    const surfacePoint = surfacePointForCell(piece, cell, normal, localPoint);
+    const da = surfacePoint.getComponent(tangentAxes[0]) - localPoint.getComponent(tangentAxes[0]);
+    const db = surfacePoint.getComponent(tangentAxes[1]) - localPoint.getComponent(tangentAxes[1]);
+    const tangentDistanceSq = da * da + db * db;
+    if (tangentDistanceSq > searchRadiusSq) continue;
+    const normalDistance = Math.abs(surfacePoint.getComponent(normalAxis) - localPoint.getComponent(normalAxis));
+    if (normalDistance > normalTolerance) continue;
+    const score = tangentDistanceSq + normalDistance * normalDistance * 0.35;
+    if (score < bestScore) {
+      bestScore = score;
+      best = {
+        cell,
+        localPoint: surfacePoint,
+        source: "nearest",
+      };
+    }
+  }
+  return best;
+}
+
+function surfacePointForCell(piece, cell, normal, referencePoint) {
+  const normalAxis = dominantAxis(normal);
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const dims = [piece.dims.x, piece.dims.y, piece.dims.z];
+  const grid = [piece.grid.x, piece.grid.y, piece.grid.z];
+  const coordinate = [referencePoint.x, referencePoint.y, referencePoint.z];
+  coordinate[normalAxis] = -dims[normalAxis] * 0.5 +
+    (sign > 0 ? cell[normalAxis] + 1 : cell[normalAxis]) * dims[normalAxis] / grid[normalAxis];
+  for (const axis of [0, 1, 2]) {
+    if (axis === normalAxis) continue;
+    const min = -dims[axis] * 0.5 + cell[axis] * dims[axis] / grid[axis];
+    const max = -dims[axis] * 0.5 + (cell[axis] + 1) * dims[axis] / grid[axis];
+    coordinate[axis] = THREE.MathUtils.clamp(coordinate[axis], min, max);
+  }
+  return new THREE.Vector3(coordinate[0], coordinate[1], coordinate[2]);
+}
+
+function voxelGripContactAreaForPatches(piece, patches) {
+  if (!piece || piece.components || piece.appearance || !Array.isArray(patches) || !patches.length) return null;
+  let primaryArea = 0;
+  let foldedArea = 0;
+  for (const patch of patches) {
+    const area = voxelGripPatchContactArea(piece, patch);
+    if (patch.folded) foldedArea += area;
+    else primaryArea += area;
+  }
+  return {
+    primaryArea,
+    foldedArea,
+    contactArea: primaryArea + foldedArea,
+  };
+}
+
+function voxelGripPatchContactArea(piece, patch) {
+  if (!patch?.corners?.length || !patch.normal) return 0;
+  const normal = patch.normal.clone().normalize();
+  const normalAxis = dominantAxis(normal);
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const tangentAxes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  const patchRangeA = vectorRangeOnAxis(patch.corners, tangentAxes[0]);
+  const patchRangeB = vectorRangeOnAxis(patch.corners, tangentAxes[1]);
+  if (patchRangeA.max <= patchRangeA.min || patchRangeB.max <= patchRangeB.min) return 0;
+
+  const dims = [piece.dims.x, piece.dims.y, piece.dims.z];
+  const grid = [piece.grid.x, piece.grid.y, piece.grid.z];
+  const cellSize = dims.map((size, axis) => size / grid[axis]);
+  const visualPlane = patch.corners.reduce((sum, corner) => sum + corner.getComponent(normalAxis), 0) / patch.corners.length;
+  const targetPlane = visualPlane - sign * gripContactVisualOffset;
+  const planeTolerance = Math.max(cellSize[normalAxis] * 0.55, gripContactVisualOffset * 2.25);
+  const cells = piece.solidCells ?? solidCellsFor(piece);
+  let area = 0;
+
+  for (const cell of cells) {
+    if (!isExposedSurfaceCell(piece, cell, normal)) continue;
+    const facePlane = -dims[normalAxis] * 0.5 +
+      (sign > 0 ? cell[normalAxis] + 1 : cell[normalAxis]) * cellSize[normalAxis];
+    if (Math.abs(facePlane - targetPlane) > planeTolerance) continue;
+
+    const cellRangeA = cellRangeOnAxis(piece, cell, tangentAxes[0]);
+    const cellRangeB = cellRangeOnAxis(piece, cell, tangentAxes[1]);
+    const overlapA = rangeOverlapSize(patchRangeA, cellRangeA);
+    const overlapB = rangeOverlapSize(patchRangeB, cellRangeB);
+    area += overlapA * overlapB;
+  }
+
+  return Math.min(area, Math.max(0, patch.area ?? area));
+}
+
+function vectorRangeOnAxis(points, axis) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    const value = point.getComponent(axis);
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return { min, max };
+}
+
+function cellRangeOnAxis(piece, cell, axis) {
+  const size = piece.dims.getComponent(axis);
+  const count = piece.grid[axisKey(axis)];
+  return {
+    min: -size * 0.5 + cell[axis] * size / count,
+    max: -size * 0.5 + (cell[axis] + 1) * size / count,
+  };
+}
+
+function rangeOverlapSize(a, b) {
+  return Math.max(0, Math.min(a.max, b.max) - Math.max(a.min, b.min));
 }
 
 function surfaceCellFromLocalPoint(piece, localPoint, normal) {
@@ -5210,5 +6386,9 @@ function animate() {
   }
   if (hoveredFace) placeFaceMarker(hoveredFace);
   updateForgeAvatar();
+  updateGripFailureAnimations(dt);
+  updateGripCollisionAttemptAnimations(dt);
+  updateGripCollisionFlashAnimations(dt);
+  updateAvatarCollisionPartFlashAnimations(dt);
   renderer.render(scene, camera);
 }
