@@ -2,8 +2,20 @@ import * as THREE from "three";
 import "../src/site-header.css";
 import "../src/site-ui.js";
 import { initI18n, t } from "../src/i18n.js";
-import { equipForgedItemOnAvatar, saveForgedItem } from "../src/forgedItems.js";
+import { getEquippedBackpackStatus } from "../src/chain/nicechunkChain.js";
+import {
+  smeltingFuelForMaterialId,
+  smeltingMaterialBaseAttributes,
+  smeltingMaterialById,
+  smeltingMaterialIdForItemCode,
+} from "../src/data/smeltingRules.js";
+import { saveForgedItem } from "../src/forgedItems.js";
+import { DEFAULT_RESOURCE_DIMENSIONS_M } from "../src/physics/resourceMass.js";
 import { createAvatar, createAvatarMaterials } from "../src/render/avatar.js";
+import {
+  createResourceMaterialPreviewCanvas,
+  resourceMaterialColors,
+} from "../src/render/resourcePreview.js";
 
 const canvas = document.querySelector("#forgeScene");
 const statusText = document.querySelector("#statusText");
@@ -11,6 +23,7 @@ const shapeText = document.querySelector("#shapeText");
 const resetCameraButton = document.querySelector("#resetCamera");
 const hammerModeButton = document.querySelector("#hammerMode");
 const resourceGrid = document.querySelector("#resourceGrid");
+const refreshMaterialsButton = document.querySelector("#refreshMaterials");
 const materialValue = document.querySelector("#materialValue");
 const heatValue = document.querySelector("#heatValue");
 const massValue = document.querySelector("#massValue");
@@ -18,10 +31,13 @@ const shapeValue = document.querySelector("#shapeValue");
 const normalizeButton = document.querySelector("#normalizePiece");
 const clearButton = document.querySelector("#clearPiece");
 const castButton = document.querySelector("#castPiece");
+const castFooterButton = document.querySelector("#castPieceFooter");
 const saveDraftButton = document.querySelector("#saveDraft");
 const saveDraftAsNewButton = document.querySelector("#saveDraftAsNew");
 const draftList = document.querySelector("#draftList");
-const rotateButtons = document.querySelectorAll("[data-rotate-axis]");
+const forgeContextMenu = document.querySelector("#forgeContextMenu");
+const contextRotateButtons = document.querySelectorAll("[data-context-rotate-axis]");
+const contextRemoveButton = document.querySelector("[data-context-remove]");
 const showChainCodeButton = document.querySelector("#showChainCode");
 const chainModal = document.querySelector("#chainModal");
 const closeChainCodeButton = document.querySelector("#closeChainCode");
@@ -40,12 +56,36 @@ const resources = {
   coal: { color: 0x2d2b28, heat: 38, mass: 2, hardness: 0.2, nameKey: "forging.resource.coal.name", fuel: true },
   handle: { color: 0x7b5438, heat: 6, mass: 4, hardness: 0.34, dims: [0.42, 1.18, 0.42], nameKey: "forging.resource.handle.name", role: "grip" },
 };
+const forgeMetersPerSceneUnit = DEFAULT_RESOURCE_DIMENSIONS_M.width;
+const defaultResourceVolumeMm3 = Math.round(
+  DEFAULT_RESOURCE_DIMENSIONS_M.width *
+  DEFAULT_RESOURCE_DIMENSIONS_M.height *
+  DEFAULT_RESOURCE_DIMENSIONS_M.depth *
+  1_000_000_000,
+);
+const defaultForgeMaterialDims = [
+  metersToForgeSceneUnits(DEFAULT_RESOURCE_DIMENSIONS_M.width),
+  metersToForgeSceneUnits(DEFAULT_RESOURCE_DIMENSIONS_M.height),
+  metersToForgeSceneUnits(DEFAULT_RESOURCE_DIMENSIONS_M.depth),
+];
+const smeltingClassColors = {
+  carbon: 0x2b2a24,
+  fiber: 0x9d8f56,
+  polymer: 0xbd8a54,
+  ceramic: 0xc9a16c,
+  glass: 0x8de8ff,
+  flux: 0xd8dfbd,
+  stone: 0x87909b,
+  metal: 0xc8d2d6,
+  alloy: 0xaeb9c1,
+  composite: 0x6bd6c8,
+};
 const tools = [
   { id: "gloves", key: "forging.tool.gloves", hotkey: "1" },
   { id: "hammer", key: "forging.tool.hammer", hotkey: "2" },
   { id: "saw", key: "forging.tool.saw", hotkey: "3" },
   { id: "handDrill", key: "forging.tool.handDrill", hotkey: "4" },
-  { id: "carvingKnife", key: "forging.tool.carvingKnife", hotkey: "5" },
+  { id: "grip", key: "forging.tool.grip", hotkey: "5" },
   { id: "axe", key: "forging.tool.axe", hotkey: "6" },
   { id: "sprayGun", key: "forging.tool.sprayGun", hotkey: "7" },
   { id: "empty8", key: "forging.tool.empty", hotkey: "8", disabled: true },
@@ -62,14 +102,9 @@ const maxForgeDrafts = 24;
 const workpieceBaseY = 1.92;
 const settleStep = 0.04;
 const settleMaxSteps = 420;
-const staticCollisionBoxes = [
-  new THREE.Box3(
-    new THREE.Vector3(-1.9, 1.22, -1.2),
-    new THREE.Vector3(1.9, 1.56, 1.2),
-  ),
-];
+const staticCollisionBoxes = [];
 const staticSupportSurfaces = [
-  { y: 1.56, minX: -1.9, maxX: 1.9, minZ: -1.2, maxZ: 1.2 },
+  { y: 0.72, minX: -1.25, maxX: 1.25, minZ: 0.18, maxZ: 1.08 },
   { y: -0.72, minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity },
 ];
 const axisLabelKeys = {
@@ -82,10 +117,13 @@ const toolCursorUrls = Object.fromEntries([
   ["hammer", toolCursorUrl("hammer")],
   ["saw", toolCursorUrl("saw")],
   ["handDrill", toolCursorUrl("handDrill")],
-  ["carvingKnife", toolCursorUrl("carvingKnife")],
+  ["grip", toolCursorUrl("grip")],
   ["axe", toolCursorUrl("axe")],
   ["sprayGun", toolCursorUrl("sprayGun")],
 ]);
+const avatarHandGripSize = new THREE.Vector3(0.34, 0.42, 0.32);
+const avatarHandGripFootprint = new THREE.Vector2(avatarHandGripSize.x, avatarHandGripSize.y);
+const gripGestureRotationStepRadians = Math.PI / 2;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x89b7c8);
@@ -138,9 +176,14 @@ let lastPointerX = 0;
 let lastPointerY = 0;
 let selectedTool = "gloves";
 let hammerEnabled = false;
+let backpackMaterialEntries = [];
+let backpackMaterialStatus = "idle";
+const usedBackpackMaterialEntryKeys = new Set();
 let moveEnabled = true;
 let sawEnabled = false;
 let drillEnabled = false;
+let gripEnabled = false;
+let gripGestureRotationStep = 0;
 let hoveredFace = null;
 let strike = null;
 let toolAction = null;
@@ -158,100 +201,76 @@ const toolSettingsMenu = createToolSettingsMenu();
 const forgeRoot = new THREE.Group();
 scene.add(forgeRoot);
 
-const furnaceBase = createBox(4.2, 0.42, 2.8, 0x4b4f48);
-furnaceBase.position.set(0, 0.12, 0);
-furnaceBase.castShadow = true;
-furnaceBase.receiveShadow = true;
-forgeRoot.add(furnaceBase);
+const forgeFireBlocks = [];
+const forgeFireLight = new THREE.PointLight(0xff8c00, 2.4, 9);
+forgeFireLight.position.set(0, 1.08, 0.18);
+scene.add(forgeFireLight);
 
-const furnaceBody = createBox(3.8, 0.34, 2.4, 0x686d63);
-furnaceBody.position.set(0, 0.48, 0);
-furnaceBody.castShadow = true;
-furnaceBody.receiveShadow = true;
-forgeRoot.add(furnaceBody);
+const forgeBase = createBox(3.45, 0.28, 3.45, 0x20201f);
+forgeBase.position.set(0, 0.12, 0);
+forgeBase.castShadow = true;
+forgeBase.receiveShadow = true;
+forgeRoot.add(forgeBase);
 
-const hearthVoid = createBox(2.45, 0.58, 0.16, 0x181510);
-hearthVoid.position.set(0, 0.82, 0.68);
-hearthVoid.castShadow = false;
-hearthVoid.receiveShadow = true;
-forgeRoot.add(hearthVoid);
+const forgeBody = createBox(3.08, 1.12, 3.08, 0x333333);
+forgeBody.position.set(0, 0.72, 0);
+forgeBody.castShadow = true;
+forgeBody.receiveShadow = true;
+forgeRoot.add(forgeBody);
 
-const frontLip = createBox(3.9, 0.24, 0.28, 0x343731);
-frontLip.position.set(0, 0.66, 1.34);
-frontLip.castShadow = true;
-frontLip.receiveShadow = true;
-forgeRoot.add(frontLip);
-
-const rearWall = createBox(3.9, 0.9, 0.28, 0x565b52);
-rearWall.position.set(0, 0.88, -1.18);
-rearWall.castShadow = true;
-rearWall.receiveShadow = true;
-forgeRoot.add(rearWall);
-
-for (const x of [-1.82, 1.82]) {
-  const sideWall = createBox(0.3, 0.95, 2.4, 0x565b52);
-  sideWall.position.set(x, 0.86, 0);
-  sideWall.castShadow = true;
-  sideWall.receiveShadow = true;
-  forgeRoot.add(sideWall);
-}
-
-const forgeDeck = createBox(3.8, 0.34, 2.4, 0x4f544b);
-forgeDeck.position.set(0, 1.39, 0);
+const forgeDeck = createBox(3.36, 0.22, 3.36, 0x565656);
+forgeDeck.position.set(0, 1.38, 0);
 forgeDeck.castShadow = true;
 forgeDeck.receiveShadow = true;
 forgeRoot.add(forgeDeck);
 
-const coalBed = createBox(2.2, 0.16, 0.72, 0x171411);
-coalBed.position.set(0, 0.74, 1.46);
-coalBed.receiveShadow = true;
-forgeRoot.add(coalBed);
+const forgeFireCore = createBox(0.88, 0.2, 0.88, 0xff4500, {
+  material: new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.68 }),
+});
+forgeFireCore.position.set(0, 1.08, 0.18);
+forgeFireCore.renderOrder = 3;
+forgeRoot.add(forgeFireCore);
+forgeFireBlocks.push(forgeFireCore);
 
-for (const [x, z, scale] of [
-  [-0.72, 1.26, 0.9],
-  [-0.25, 1.48, 1.1],
-  [0.34, 1.3, 0.82],
-  [0.78, 1.66, 0.95],
-  [-0.58, 1.74, 0.76],
+for (const [x, z, scale, color] of [
+  [-0.34, -0.22, 0.64, 0xff8c00],
+  [0.3, -0.08, 0.52, 0xffbf00],
+  [-0.06, 0.32, 0.58, 0xff5a18],
 ]) {
-  const coal = createBox(0.32 * scale, 0.2 * scale, 0.26 * scale, 0x25201c);
-  coal.position.set(x, 0.62, z);
-  coal.rotation.y = x + z;
-  coal.castShadow = true;
-  coal.receiveShadow = true;
-  forgeRoot.add(coal);
+  const ember = createBox(0.34 * scale, 0.22 * scale, 0.34 * scale, color, {
+    material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.62 }),
+  });
+  ember.position.set(x, 1.18 + scale * 0.03, z + 0.18);
+  ember.renderOrder = 4;
+  forgeRoot.add(ember);
+  forgeFireBlocks.push(ember);
 }
 
-for (const [x, z, height, color] of [
-  [-0.42, 1.42, 1.05, 0xf06b2f],
-  [0.02, 1.64, 1.28, 0xffc64f],
-  [0.44, 1.36, 0.96, 0xe34825],
+for (const [x, z] of [
+  [-1.42, -1.42],
+  [1.42, -1.42],
+  [-1.42, 1.42],
+  [1.42, 1.42],
 ]) {
-  const flame = createFlame(height, color);
-  flame.position.set(x, 0.86, z);
-  forgeRoot.add(flame);
+  const corner = createBox(0.42, 1.08, 0.42, 0x2a2a2a);
+  corner.position.set(x, 0.72, z);
+  corner.castShadow = true;
+  corner.receiveShadow = true;
+  forgeRoot.add(corner);
 }
 
-const anvilBase = createBox(1.7, 0.34, 0.9, 0x555a57);
-anvilBase.position.set(0, 1.16, 0);
-anvilBase.castShadow = true;
-anvilBase.receiveShadow = true;
-forgeRoot.add(anvilBase);
-
-const anvilTop = createBox(2.3, 0.3, 0.72, 0x747c78);
-anvilTop.position.set(0, 1.48, 0);
-anvilTop.castShadow = true;
-anvilTop.receiveShadow = true;
-forgeRoot.add(anvilTop);
-
-const horn = new THREE.Mesh(
-  new THREE.ConeGeometry(0.34, 0.88, 4).rotateZ(Math.PI / 2),
-  new THREE.MeshLambertMaterial({ color: 0x747c78 }),
-);
-horn.position.set(1.42, 1.48, 0);
-horn.rotation.x = Math.PI / 4;
-horn.castShadow = true;
-forgeRoot.add(horn);
+for (const [x, z, width, depth] of [
+  [0, -1.74, 3.6, 0.18],
+  [0, 1.74, 3.6, 0.18],
+  [-1.74, 0, 0.18, 3.6],
+  [1.74, 0, 0.18, 3.6],
+]) {
+  const rim = createBox(width, 0.16, depth, 0x1a1a1a);
+  rim.position.set(x, 1.56, z);
+  rim.castShadow = true;
+  rim.receiveShadow = true;
+  forgeRoot.add(rim);
+}
 
 const ground = createBox(22, 0.08, 22, 0x3a5130);
 ground.position.y = -0.78;
@@ -291,6 +310,19 @@ faceMarker.add(faceMarkerSurface, faceMarkerLines);
 faceMarker.visible = false;
 scene.add(faceMarker);
 
+const gripBindingMarker = new THREE.Group();
+const gripBindingSurface = new THREE.Mesh(
+  emptyGeometry.clone(),
+  new THREE.MeshBasicMaterial({ color: 0x45ff8a, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+);
+const gripBindingLines = new THREE.LineSegments(
+  emptyGeometry.clone(),
+  new THREE.LineBasicMaterial({ color: 0xc5ffd8, transparent: true, opacity: 0.95 }),
+);
+gripBindingMarker.add(gripBindingSurface, gripBindingLines);
+gripBindingMarker.visible = false;
+scene.add(gripBindingMarker);
+
 const hammer = createHammer();
 hammer.visible = false;
 scene.add(hammer);
@@ -300,6 +332,9 @@ scene.add(saw);
 const handDrill = createHandDrill();
 handDrill.visible = false;
 scene.add(handDrill);
+const gripHand = createGripHand();
+gripHand.visible = false;
+scene.add(gripHand);
 
 const pieces = [];
 const selectableMeshes = [];
@@ -311,6 +346,8 @@ resize();
 updateHud();
 renderToolHotbar();
 renderDraftList();
+renderBackpackMaterials();
+void syncBackpackMaterials();
 setStatus("forging.status.glovesReady");
 animate();
 
@@ -328,6 +365,7 @@ window.addEventListener("nicechunk:languagechange", () => {
   updateHud();
   renderToolHotbar();
   renderDraftList();
+  renderBackpackMaterials();
   updateAxisLabels();
   renderToolSettingsMenu();
   if (statusText.dataset.statusKey) statusText.textContent = t(statusText.dataset.statusKey);
@@ -338,10 +376,18 @@ hammerModeButton.addEventListener("click", () => selectTool(selectedTool === "ha
 normalizeButton.addEventListener("click", normalizePiece);
 clearButton.addEventListener("click", clearPiece);
 castButton.addEventListener("click", castWorkbench);
+castFooterButton?.addEventListener("click", () => castButton?.click());
 saveDraftButton.addEventListener("click", () => saveCurrentDraft(false));
 saveDraftAsNewButton.addEventListener("click", () => saveCurrentDraft(true));
-rotateButtons.forEach((button) => {
-  button.addEventListener("click", () => rotateSelectedPiece(button.dataset.rotateAxis));
+contextRotateButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    hideForgeContextMenu();
+    rotateSelectedPiece(button.dataset.contextRotateAxis);
+  });
+});
+contextRemoveButton?.addEventListener("click", () => {
+  hideForgeContextMenu();
+  removeSelectedPiece();
 });
 showChainCodeButton.addEventListener("click", openChainCodeModal);
 closeChainCodeButton.addEventListener("click", closeChainCodeModal);
@@ -380,9 +426,16 @@ saveChainCodeButton.addEventListener("click", () => {
   saveForgedItem(currentChainCode);
   setStatus("forging.status.chainSaved");
 });
+refreshMaterialsButton?.addEventListener("click", () => {
+  void syncBackpackMaterials({ force: true });
+});
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !toolSettingsMenu.hidden) {
     hideToolSettingsMenu();
+    return;
+  }
+  if (event.key === "Escape" && forgeContextMenu && !forgeContextMenu.hidden) {
+    hideForgeContextMenu();
     return;
   }
   if (event.key === "Escape" && chainModal.classList.contains("open")) {
@@ -390,21 +443,16 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+  if (event.key === "Delete" || event.key === "Backspace") {
+    if (!selectedPiece) return;
+    event.preventDefault();
+    removeSelectedPiece();
+    return;
+  }
   const tool = tools.find((item) => item.hotkey === event.key);
   if (!tool || tool.disabled) return;
   event.preventDefault();
   selectTool(tool.id);
-});
-
-resourceGrid.querySelectorAll(".resource-card").forEach((card) => {
-  card.addEventListener("dragstart", (event) => {
-    card.classList.add("dragging");
-    event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("text/plain", card.dataset.resource);
-    setStatus("forging.status.dropReady");
-  });
-  card.addEventListener("dragend", () => card.classList.remove("dragging"));
-  card.addEventListener("click", () => addResource(card.dataset.resource));
 });
 
 canvas.addEventListener("dragover", (event) => {
@@ -414,8 +462,7 @@ canvas.addEventListener("dragover", (event) => {
 
 canvas.addEventListener("drop", (event) => {
   event.preventDefault();
-  const resourceId = event.dataTransfer.getData("text/plain");
-  addResource(resourceId);
+  addDroppedMaterial(event.dataTransfer.getData("text/plain"));
 });
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -460,7 +507,7 @@ canvas.addEventListener("pointerdown", (event) => {
     }
   }
 
-  if (moveEnabled && selectedPiece) {
+  if (moveEnabled) {
     activeDrag = createMoveDrag(event, { allowPlaneDrag: !touch });
     if (activeDrag) return;
   }
@@ -537,6 +584,10 @@ canvas.addEventListener("pointerup", (event) => {
   }
   updateMoveGizmo();
 
+  if (!wasDragging && !wasRotating && !leftPointerMoved && gripEnabled) {
+    setGripFromPointer();
+    return;
+  }
   if (!wasDragging && !wasRotating && !leftPointerMoved && hammerEnabled) hammerHit();
 });
 
@@ -559,19 +610,34 @@ canvas.addEventListener("auxclick", (event) => {
 canvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   updatePointer(event);
-  if (sawEnabled) {
+  if (moveEnabled) {
+    const target = toolTargetFromPointer({ allowSelectedFallback: false });
+    if (target?.piece) selectPiece(target.piece);
+    if (selectedPiece) showForgeContextMenu(event.clientX, event.clientY);
+    else hideForgeContextMenu();
+    hideToolSettingsMenu();
+  } else if (gripEnabled) {
+    hideForgeContextMenu();
+    rotateGripGesture();
+    hideToolSettingsMenu();
+    updateHoveredFace();
+  } else if (sawEnabled) {
+    hideForgeContextMenu();
     rotateSawAngle();
     hideToolSettingsMenu();
     updateHoveredFace();
   } else if (drillEnabled) {
+    hideForgeContextMenu();
     showToolSettingsMenu(event.clientX, event.clientY);
     updateHoveredFace();
   } else {
+    hideForgeContextMenu();
     hideToolSettingsMenu();
   }
 });
 
 document.addEventListener("pointerdown", (event) => {
+  if (forgeContextMenu && !forgeContextMenu.hidden && !forgeContextMenu.contains(event.target)) hideForgeContextMenu();
   if (!toolSettingsMenu.hidden && !toolSettingsMenu.contains(event.target)) hideToolSettingsMenu();
 });
 
@@ -648,8 +714,8 @@ function toolCursorSvg(toolId) {
   if (toolId === "handDrill") {
     return `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path ${common} fill='#b8c0bd' d='M7 13h17l5 3-5 3H7z'/><path ${common} fill='#6b3f25' d='M5 10h7v12H5z'/><path ${common} fill='none' d='M9 22v6h7'/></svg>`;
   }
-  if (toolId === "carvingKnife") {
-    return `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path ${common} fill='#c8d0c9' d='M7 24L24 5l4 4L10 27z'/><path ${common} fill='#6b3f25' d='M4 25l6-6 4 4-6 6z'/></svg>`;
+  if (toolId === "grip") {
+    return `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path ${common} fill='#c99061' d='M8 12h5v13H8zM14 8h4v17h-4zM19 9h4v16h-4zM24 13h4v11h-4z'/><path ${common} fill='#b2774f' d='M7 21h19v7H9z'/></svg>`;
   }
   if (toolId === "axe") {
     return `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path ${common} fill='#6b3f25' d='M14 8h5v21h-5z'/><path ${common} fill='#9ea6a8' d='M11 5h12l5 6-5 6H11z'/></svg>`;
@@ -660,8 +726,8 @@ function toolCursorSvg(toolId) {
   return `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path ${common} fill='#8a5a35' d='M9 8h6v18H9zM17 6h6v20h-6z'/></svg>`;
 }
 
-function createBox(width, height, depth, color) {
-  return new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), new THREE.MeshLambertMaterial({ color }));
+function createBox(width, height, depth, color, options = {}) {
+  return new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), options.material ?? new THREE.MeshLambertMaterial({ color }));
 }
 
 function createFlame(height, color) {
@@ -728,6 +794,69 @@ function createHandDrill() {
     if (!child.isMesh) return;
     child.renderOrder = 10;
     child.material.depthTest = false;
+  });
+  return group;
+}
+
+function createGripHand() {
+  const group = new THREE.Group();
+  const handMaterial = new THREE.MeshBasicMaterial({
+    color: 0x40ff88,
+    transparent: true,
+    opacity: 0.42,
+    depthTest: false,
+  });
+  const jointMaterial = new THREE.MeshBasicMaterial({
+    color: 0x1f9d54,
+    transparent: true,
+    opacity: 0.55,
+    depthTest: false,
+  });
+
+  const addHandPart = (name, size, position, material = handMaterial, rotation = null) => {
+    const part = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), material);
+    part.name = name;
+    part.position.copy(position);
+    if (rotation) part.rotation.set(rotation.x, rotation.y, rotation.z);
+    group.add(part);
+    return part;
+  };
+
+  const palmDepth = 0.045;
+  const rail = 0.035;
+  addHandPart("palmKnuckleRail", new THREE.Vector3(avatarHandGripSize.x, rail, palmDepth), new THREE.Vector3(0, 0.16, 0));
+  addHandPart("palmWristRail", new THREE.Vector3(avatarHandGripSize.x * 0.74, rail, palmDepth), new THREE.Vector3(0.015, -0.16, 0));
+  addHandPart("palmThumbRail", new THREE.Vector3(rail, avatarHandGripSize.y * 0.68, palmDepth), new THREE.Vector3(-0.155, -0.005, 0));
+  addHandPart("palmOuterRail", new THREE.Vector3(rail, avatarHandGripSize.y * 0.62, palmDepth), new THREE.Vector3(0.155, 0.01, 0));
+  addHandPart("wrist", new THREE.Vector3(0.18, 0.08, palmDepth), new THREE.Vector3(0.02, -0.245, 0), jointMaterial);
+
+  for (let index = 0; index < 4; index++) {
+    const x = -0.12 + index * 0.08;
+    const length = index === 0 || index === 3 ? 0.16 : 0.19;
+    addHandPart(`finger${index}Base`, new THREE.Vector3(0.045, length, 0.05), new THREE.Vector3(x, 0.255, -0.018), jointMaterial);
+    addHandPart(`finger${index}Tip`, new THREE.Vector3(0.04, length * 0.72, 0.045), new THREE.Vector3(x, 0.255 + length * 0.58, -0.03), handMaterial);
+    addHandPart(`finger${index}Pad`, new THREE.Vector3(0.048, 0.028, 0.052), new THREE.Vector3(x, 0.255 + length * 0.98, -0.054), handMaterial);
+  }
+
+  addHandPart(
+    "thumbBase",
+    new THREE.Vector3(0.055, 0.16, 0.05),
+    new THREE.Vector3(-0.205, -0.035, -0.02),
+    jointMaterial,
+    new THREE.Vector3(0, 0, -0.72),
+  );
+  addHandPart(
+    "thumbTip",
+    new THREE.Vector3(0.052, 0.14, 0.048),
+    new THREE.Vector3(-0.25, 0.06, -0.04),
+    handMaterial,
+    new THREE.Vector3(0, 0, -0.36),
+  );
+
+  group.renderOrder = 12;
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.renderOrder = 12;
   });
   return group;
 }
@@ -803,18 +932,193 @@ function createTextTexture(text, color) {
   return texture;
 }
 
-function addResource(resourceId) {
-  const resource = resources[resourceId];
+async function syncBackpackMaterials({ force = false } = {}) {
+  if (backpackMaterialStatus === "syncing" && !force) return;
+  backpackMaterialStatus = "syncing";
+  renderBackpackMaterials();
+  try {
+    const status = await getEquippedBackpackStatus();
+    if (!status?.equipped || !status.backpack) {
+      backpackMaterialEntries = [];
+      backpackMaterialStatus = "no-backpack";
+      renderBackpackMaterials();
+      return;
+    }
+    backpackMaterialEntries = collectBackpackMaterialEntries(status.backpack);
+    backpackMaterialStatus = backpackMaterialEntries.length ? "ready" : "empty";
+    renderBackpackMaterials();
+    setStatus("forging.status.materialsSynced");
+  } catch (error) {
+    console.warn("Failed to load forging backpack materials", error);
+    backpackMaterialEntries = [];
+    backpackMaterialStatus = "error";
+    renderBackpackMaterials();
+    setStatus("forging.status.materialLoadFailed");
+  }
+}
+
+function collectBackpackMaterialEntries(backpack) {
+  const entries = [];
+  for (const [slotIndex, slot] of (backpack?.slots ?? []).entries()) {
+    if (slot?.kind !== "item") continue;
+    const materialId = smeltingMaterialIdForItemCode(slot.itemCode) ?? smeltingMaterialIdForItemCode(slot.itemId);
+    const material = smeltingMaterialById(materialId);
+    if (!material) continue;
+    entries.push({
+      key: backpackMaterialEntryKey(slot, slotIndex),
+      id: materialId,
+      material,
+      quantity: Math.max(1, Number(slot.quantity) || 1),
+      volumeMm3: Math.max(0, Number(slot.volumeMm3) || 0),
+      slot,
+      slotIndex,
+    });
+  }
+  return entries;
+}
+
+function backpackMaterialEntryKey(slot, slotIndex) {
+  return [
+    slotIndex,
+    slot?.itemPda || "",
+    slot?.itemId || "",
+    slot?.itemCode ?? "",
+    slot?.volumeMm3 ?? "",
+    slot?.flags ?? "",
+    slot?.quantity ?? "",
+  ].join(":");
+}
+
+function backpackMaterialEntryByKey(key) {
+  return backpackMaterialEntries.find((entry) => entry.key === key) ?? null;
+}
+
+function renderBackpackMaterials() {
+  if (!resourceGrid) return;
+  if (backpackMaterialStatus === "syncing") {
+    resourceGrid.replaceChildren(createMaterialStateCard("loading", "forging.materialSyncing", "forging.materialSyncingDetail"));
+    return;
+  }
+  if (backpackMaterialStatus === "no-backpack") {
+    resourceGrid.replaceChildren(createMaterialStateCard("empty", "forging.materialNoBackpack", "forging.materialNoBackpackDetail"));
+    return;
+  }
+  if (backpackMaterialStatus === "error") {
+    resourceGrid.replaceChildren(createMaterialStateCard("error", "forging.materialLoadFailed", "forging.materialLoadFailedDetail"));
+    return;
+  }
+  if (!backpackMaterialEntries.length) {
+    resourceGrid.replaceChildren(createMaterialStateCard("empty", "forging.materialEmpty", "forging.materialEmptyDetail"));
+    return;
+  }
+  resourceGrid.replaceChildren(...backpackMaterialEntries.map(createMaterialCard));
+}
+
+function createMaterialStateCard(kind, titleKey, detailKey) {
+  const card = document.createElement("div");
+  card.className = `resource-card ${kind}`;
+  const title = document.createElement("strong");
+  title.textContent = t(titleKey);
+  const detail = document.createElement("span");
+  detail.textContent = t(detailKey);
+  card.append(title, detail);
+  return card;
+}
+
+function createMaterialCard(entry) {
+  const profile = materialForgeProfile(entry.id);
+  const used = usedBackpackMaterialEntryKeys.has(entry.key);
+  const card = document.createElement("button");
+  card.className = "resource-card";
+  card.type = "button";
+  card.draggable = !used;
+  card.disabled = used;
+  card.classList.toggle("used", used);
+  card.dataset.material = entry.id;
+  card.dataset.materialEntry = entry.key;
+  card.setAttribute("aria-disabled", String(used));
+
+  const swatch = document.createElement("span");
+  swatch.className = "resource-swatch resource-preview-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  swatch.append(createResourceMaterialPreviewCanvas(entry.material, {
+    className: "resource-swatch-canvas",
+    size: 48,
+  }));
+
+  const title = document.createElement("strong");
+  title.textContent = materialDisplayName(entry.id);
+
+  const detail = document.createElement("span");
+  const fuel = smeltingFuelForMaterialId(entry.id);
+  detail.textContent = fuel
+    ? t("forging.materialFuelDetail", { tier: fuel.heatTier, count: entry.quantity })
+    : t("forging.materialCardDetail", { type: materialUseLabel(entry.material), count: entry.quantity });
+
+  card.append(swatch, title, detail);
+  card.addEventListener("dragstart", (event) => {
+    if (usedBackpackMaterialEntryKeys.has(entry.key)) {
+      event.preventDefault();
+      return;
+    }
+    card.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", `material-entry:${entry.key}`);
+    setStatus("forging.status.dropReady");
+  });
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  card.addEventListener("click", () => addBackpackMaterialEntry(entry));
+  return card;
+}
+
+function addDroppedMaterial(payload) {
+  const value = String(payload || "");
+  if (value.startsWith("material-entry:")) {
+    const entry = backpackMaterialEntryByKey(value.slice("material-entry:".length));
+    if (entry) addBackpackMaterialEntry(entry);
+    return;
+  }
+  if (value.startsWith("material:")) {
+    addBackpackMaterial(value.slice("material:".length));
+    return;
+  }
+  addResource(value);
+}
+
+function addBackpackMaterial(materialId) {
+  const entry = backpackMaterialEntries.find((item) => item.id === materialId);
+  if (entry) {
+    addBackpackMaterialEntry(entry);
+    return;
+  }
+  const profile = materialForgeProfile(materialId);
+  if (!profile) return;
+  addResource(profile.resourceId, profile);
+}
+
+function addBackpackMaterialEntry(entry) {
+  if (!entry?.key || usedBackpackMaterialEntryKeys.has(entry.key)) return;
+  const profile = materialForgeProfile(entry?.id, entry);
+  if (!profile) return;
+  addResource(profile.resourceId, profile);
+}
+
+function addResource(resourceId, materialProfile = null) {
+  const resource = materialProfile ?? resources[resourceId];
   if (!resource) return;
 
   if (resource.fuel) {
     if (selectedPiece) selectedPiece.heat = Math.min(100, selectedPiece.heat + resource.heat);
+    if (materialProfile?.entryKey) {
+      usedBackpackMaterialEntryKeys.add(materialProfile.entryKey);
+      renderBackpackMaterials();
+    }
     setStatus("forging.status.heatAdded");
     updateHud();
     return;
   }
 
-  const piece = createPiece(resourceId);
+  const piece = createPiece(resourceId, materialProfile);
   const position = findOpenPlacement(piece);
   if (!position) {
     setStatus("forging.status.miss");
@@ -822,18 +1126,42 @@ function addResource(resourceId) {
     return;
   }
 
+  if (materialProfile?.entryKey) piece.backpackMaterialEntryKey = materialProfile.entryKey;
   piece.offset.copy(position);
   pieces.push(piece);
   selectableMeshes.push(piece.mesh);
   scene.add(piece.mesh, piece.edges);
+  if (piece.backpackMaterialEntryKey) {
+    usedBackpackMaterialEntryKeys.add(piece.backpackMaterialEntryKey);
+    renderBackpackMaterials();
+  }
   selectPiece(piece);
   setStatus("forging.status.resourceAdded");
   updatePiece(piece);
   updateHud();
 }
 
-function createPiece(resourceId) {
-  const resource = resources[resourceId];
+function syncUsedBackpackMaterialEntriesFromWorkbench() {
+  usedBackpackMaterialEntryKeys.clear();
+  for (const piece of pieces) {
+    for (const key of backpackMaterialEntryKeysForPiece(piece)) usedBackpackMaterialEntryKeys.add(key);
+  }
+  renderBackpackMaterials();
+}
+
+function backpackMaterialEntryKeysForPiece(piece) {
+  const keys = [];
+  if (piece?.backpackMaterialEntryKey) keys.push(piece.backpackMaterialEntryKey);
+  for (const key of piece?.backpackMaterialEntryKeys ?? []) if (key) keys.push(key);
+  for (const component of piece?.components ?? []) {
+    if (component.backpackMaterialEntryKey) keys.push(component.backpackMaterialEntryKey);
+    for (const key of component.backpackMaterialEntryKeys ?? []) if (key) keys.push(key);
+  }
+  return [...new Set(keys)];
+}
+
+function createPiece(resourceId, materialProfile = null) {
+  const resource = materialProfile ?? resources[resourceId];
   const material = workMaterial.clone();
   material.color.set(resource.color);
   const mesh = new THREE.Mesh(emptyGeometry.clone(), material);
@@ -849,13 +1177,14 @@ function createPiece(resourceId) {
   const piece = {
     id: nextPieceId++,
     resourceId,
-    materialIds: [resourceId],
+    materialIds: [materialProfile?.materialId ?? resourceId],
     role: resource.role,
     color: new THREE.Color(resource.color),
     heat: resource.heat,
     mass: resource.mass,
     baseMass: resource.mass,
     hardness: resource.hardness,
+    backpackMaterialEntryKey: materialProfile?.entryKey ?? null,
     dims: new THREE.Vector3(...resource.dims),
     offset: new THREE.Vector3(0, 0, 0),
     grid: { ...voxelGrid },
@@ -865,6 +1194,98 @@ function createPiece(resourceId) {
   };
   refreshPieceGeometry(piece);
   return piece;
+}
+
+function applyMaterialProfileToPiece(piece, materialProfile = null) {
+  if (!piece || !materialProfile) return;
+  piece.materialIds = [materialProfile.materialId];
+  piece.role = materialProfile.role;
+  piece.color = new THREE.Color(materialProfile.color);
+  piece.heat = materialProfile.heat;
+  piece.mass = materialProfile.mass;
+  piece.baseMass = materialProfile.mass;
+  piece.hardness = materialProfile.hardness;
+  piece.dims = new THREE.Vector3(...materialProfile.dims);
+  piece.mesh.material.color.set(materialProfile.color);
+}
+
+function materialForgeProfile(materialId, entry = null) {
+  const material = smeltingMaterialById(materialId);
+  if (!material) return null;
+  const attributes = smeltingMaterialBaseAttributes(material);
+  const fuel = smeltingFuelForMaterialId(materialId);
+  const resourceId = fuel ? "coal" : forgeResourceIdForMaterial(material);
+  const base = resources[resourceId] ?? resources.iron;
+  return {
+    ...base,
+    materialId,
+    entryKey: entry?.key ?? null,
+    slotIndex: Number.isInteger(entry?.slotIndex) ? entry.slotIndex : null,
+    resourceId,
+    color: smeltingMaterialColor(material),
+    fuel: Boolean(fuel),
+    heat: fuel ? Math.max(base.heat, fuel.heatTier * 18) : Math.max(6, material.requiredHeatTier * 9 + Math.round((attributes.heatResistance ?? 0) / 8)),
+    mass: materialMassForForgeUse(entry?.volumeMm3, attributes),
+    hardness: Math.max(0.12, Math.min(0.98, (attributes.hardness ?? 50) / 100)),
+    dims: materialDimsForForgeUse(entry?.volumeMm3),
+    role: materialRoleForForgeUse(material.forgeUse, base.role),
+  };
+}
+
+function forgeResourceIdForMaterial(material) {
+  if (["binding", "soilCatalyst"].includes(material.forgeUse) || ["fiber", "polymer"].includes(material.class)) return "handle";
+  if (["conductor", "circuit", "cooling", "lens"].includes(material.forgeUse)) return "copper";
+  if (["mold", "flux", "masonry", "sealedVessel"].includes(material.forgeUse) || ["ceramic", "glass", "stone"].includes(material.class)) return "tin";
+  return "iron";
+}
+
+function materialRoleForForgeUse(forgeUse, fallback = null) {
+  if (forgeUse === "binding") return "grip";
+  return fallback;
+}
+
+function materialDimsForForgeUse(volumeMm3 = 0) {
+  const volume = Number(volumeMm3) > 0 ? Number(volumeMm3) : defaultResourceVolumeMm3;
+  const sideMeters = Math.cbrt(volume * 1e-9);
+  const side = metersToForgeSceneUnits(sideMeters);
+  return [side, side, side].map((value) => Number(value.toFixed(4)));
+}
+
+function materialMassForForgeUse(volumeMm3 = 0, attributes = {}) {
+  const volume = Number(volumeMm3) > 0 ? Number(volumeMm3) : defaultResourceVolumeMm3;
+  const densityKgM3 = materialDensityKgM3(attributes);
+  return Number((volume * 1e-9 * densityKgM3).toFixed(3));
+}
+
+function materialDensityKgM3(attributes = {}) {
+  return Math.max(50, (Number(attributes.density) || 45) * 100);
+}
+
+function metersToForgeSceneUnits(value) {
+  return value / forgeMetersPerSceneUnit;
+}
+
+function smeltingMaterialColor(material) {
+  if (!material) return 0x8bd8ff;
+  return new THREE.Color(resourceMaterialColors(material)[0]).getHex() || smeltingClassColors[material.class] || 0x8bd8ff;
+}
+
+function materialDisplayName(materialId) {
+  const key = `resourceAtlas.material.item.${materialId}.name`;
+  const label = t(key);
+  return label === key ? humanizeId(materialId) : label;
+}
+
+function materialUseLabel(material) {
+  return humanizeId(material?.forgeUse || material?.class || "material");
+}
+
+function humanizeId(id) {
+  return String(id || "material")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function createPieceFromComponent(component) {
@@ -931,6 +1352,8 @@ function createPieceFromAppearance(appearance) {
     grid: { ...appearanceGrid },
     solid: createSolidVoxels(appearanceGrid),
     gripOffset: appearance.gripOffset?.clone?.() ?? null,
+    gripNormal: appearance.gripNormal?.clone?.() ?? null,
+    gripAngle: appearance.gripAngle ?? 0,
     mesh,
     edges,
   };
@@ -947,7 +1370,7 @@ function createPieceFromDraft(snapshot) {
   const material = isCompound || isAppearance
     ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.68, metalness: 0.45 })
     : workMaterial.clone();
-  if (!isCompound && !isAppearance) material.color.set(resource.color);
+  if (!isCompound && !isAppearance) material.color.set(snapshot.color ?? resource.color);
   const mesh = new THREE.Mesh(emptyGeometry.clone(), material);
   const edges = new THREE.LineSegments(
     emptyGeometry.clone(),
@@ -961,7 +1384,9 @@ function createPieceFromDraft(snapshot) {
   const piece = {
     id: nextPieceId++,
     resourceId,
-    materialIds: Array.isArray(snapshot.materialIds) ? snapshot.materialIds.filter((id) => resources[id]) : [resourceId],
+    materialIds: Array.isArray(snapshot.materialIds) ? snapshot.materialIds.filter(Boolean) : [resourceId],
+    backpackMaterialEntryKey: typeof snapshot.backpackMaterialEntryKey === "string" ? snapshot.backpackMaterialEntryKey : null,
+    backpackMaterialEntryKeys: Array.isArray(snapshot.backpackMaterialEntryKeys) ? snapshot.backpackMaterialEntryKeys.filter(Boolean) : [],
     role: snapshot.role ?? resource.role,
     color: new THREE.Color(snapshot.color ?? resource.color),
     heat: finiteNumber(snapshot.heat, resource.heat),
@@ -980,6 +1405,8 @@ function createPieceFromDraft(snapshot) {
     piece.grid = { ...grid };
     piece.solid = uint8FromArray(snapshot.solid, grid.x * grid.y * grid.z);
     piece.gripOffset = snapshot.gripOffset ? vectorFromArray(snapshot.gripOffset, null) : piece.appearance.gripOffset?.clone?.() ?? null;
+    piece.gripNormal = snapshot.gripNormal ? vectorFromArray(snapshot.gripNormal, null) : piece.appearance.gripNormal?.clone?.() ?? null;
+    piece.gripAngle = finiteNumber(snapshot.gripAngle, piece.appearance.gripAngle ?? 0);
   } else if (isCompound) {
     piece.components = snapshot.components.map(deserializeDraftComponent);
   } else {
@@ -987,6 +1414,8 @@ function createPieceFromDraft(snapshot) {
     piece.grid = { ...grid };
     piece.solid = uint8FromArray(snapshot.solid, grid.x * grid.y * grid.z);
     piece.gripOffset = snapshot.gripOffset ? vectorFromArray(snapshot.gripOffset, null) : null;
+    piece.gripNormal = snapshot.gripNormal ? vectorFromArray(snapshot.gripNormal, null) : null;
+    piece.gripAngle = finiteNumber(snapshot.gripAngle, 0);
   }
 
   refreshPieceGeometry(piece);
@@ -999,7 +1428,9 @@ function deserializeDraftComponent(component) {
   const grid = validGrid(component.grid) ? component.grid : { ...voxelGrid };
   return {
     resourceId,
-    materialIds: Array.isArray(component.materialIds) ? component.materialIds.filter((id) => resources[id]) : [resourceId],
+    materialIds: Array.isArray(component.materialIds) ? component.materialIds.filter(Boolean) : [resourceId],
+    backpackMaterialEntryKey: typeof component.backpackMaterialEntryKey === "string" ? component.backpackMaterialEntryKey : null,
+    backpackMaterialEntryKeys: Array.isArray(component.backpackMaterialEntryKeys) ? component.backpackMaterialEntryKeys.filter(Boolean) : [],
     role: component.role ?? resource.role,
     color: new THREE.Color(component.color ?? resource.color),
     baseMass: finiteNumber(component.baseMass, resource.mass),
@@ -1008,6 +1439,8 @@ function deserializeDraftComponent(component) {
     grid: { ...grid },
     solid: uint8FromArray(component.solid, grid.x * grid.y * grid.z),
     gripOffset: component.gripOffset ? vectorFromArray(component.gripOffset, null) : null,
+    gripNormal: component.gripNormal ? vectorFromArray(component.gripNormal, null) : null,
+    gripAngle: finiteNumber(component.gripAngle, 0),
   };
 }
 
@@ -1024,9 +1457,17 @@ function deserializeDraftAppearance(appearance) {
       v0: THREE.MathUtils.clamp(Number(quad.v0) || 0, 0, appearanceGrid.x),
       v1: THREE.MathUtils.clamp(Number(quad.v1) || 0, 0, appearanceGrid.x),
       resourceId: resources[quad.resourceId] ? quad.resourceId : "iron",
+      color: validColorValue(quad.color) ? quad.color : null,
+      materialIds: Array.isArray(quad.materialIds) ? quad.materialIds.filter(Boolean) : [],
     })) : [],
     gripOffset: appearance.gripOffset ? vectorFromArray(appearance.gripOffset, null) : null,
+    gripNormal: appearance.gripNormal ? vectorFromArray(appearance.gripNormal, null) : null,
+    gripAngle: finiteNumber(appearance.gripAngle, 0),
   };
+}
+
+function validColorValue(value) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
 }
 
 function createSolidVoxels(grid) {
@@ -1153,7 +1594,7 @@ function buildAppearanceGeometry(appearance) {
   const normals = [];
   const colors = [];
   for (const quad of appearance.quads ?? []) {
-    const color = new THREE.Color(resources[quad.resourceId]?.color ?? resources.iron.color);
+    const color = new THREE.Color(quad.color ?? resources[quad.resourceId]?.color ?? resources.iron.color);
     pushAppearanceQuad(positions, normals, colors, appearance.dims, quad, color);
   }
 
@@ -1278,10 +1719,15 @@ function updatePieceMass(piece) {
 function updateSolidCells(piece) {
   if (piece.appearance) return;
   if (piece.components) {
-    for (const component of piece.components) component.solidCells = solidCellsFor(component);
+    for (const component of piece.components) updateComponentSolidCells(component);
     return;
   }
-  piece.solidCells = solidCellsFor(piece);
+  updateComponentSolidCells(piece);
+}
+
+function updateComponentSolidCells(component) {
+  component.solidCells = solidCellsFor(component);
+  component.fullSolid = component.solidCells.length === component.grid.x * component.grid.y * component.grid.z;
 }
 
 function solidCellsFor(component) {
@@ -1351,7 +1797,7 @@ function hammerHit() {
     return;
   }
 
-  const target = toolTargetFromPointer();
+  const target = toolTargetFromPointer({ preferSelected: true });
   if (!target) {
     setStatus("forging.status.miss");
     return;
@@ -1366,6 +1812,53 @@ function hammerHit() {
   if (compressFace(piece, normal, point)) setStatus("forging.status.hit");
 }
 
+function setGripFromPointer() {
+  if (!pieces.length) {
+    setStatus("forging.status.empty");
+    return;
+  }
+  const target = toolTargetFromPointer({ allowSelectedFallback: false, preferSelected: true });
+  if (!target) {
+    setStatus("forging.status.miss");
+    return;
+  }
+  const grip = gripCandidateFromTarget(target, { log: true, context: "click" });
+  if (!grip?.valid) {
+    setStatus("forging.status.gripTooLarge");
+    return;
+  }
+  assignGripOffset(target.piece, grip.localPoint, grip.normal, grip.angle);
+  selectPiece(target.piece);
+  setStatus("forging.status.gripSet");
+  updateHud();
+  markEquipmentPreviewDirty();
+  updateGripBindingMarker();
+  updateHoveredFace();
+}
+
+function assignGripOffset(piece, localPoint, normal = null, angle = 0) {
+  if (!piece || !localPoint) return;
+  const grip = localPoint.clone();
+  const gripNormal = normal?.clone?.() ?? null;
+  const gripAngle = normalizeGripAngle(angle);
+  if (piece.appearance) {
+    piece.gripOffset = grip;
+    piece.gripNormal = gripNormal;
+    piece.gripAngle = gripAngle;
+    piece.appearance.gripOffset = grip.clone();
+    piece.appearance.gripNormal = gripNormal?.clone?.() ?? null;
+    piece.appearance.gripAngle = gripAngle;
+    currentChainCode = "";
+    chainCodeOutput.value = "";
+    return;
+  }
+  piece.gripOffset = grip;
+  piece.gripNormal = gripNormal;
+  piece.gripAngle = gripAngle;
+  currentChainCode = "";
+  chainCodeOutput.value = "";
+}
+
 function compressFace(piece, normal, hitPoint) {
   const heatFactor = THREE.MathUtils.clamp(piece.heat / 100, 0.18, 1);
   const hardnessFactor = THREE.MathUtils.clamp(1.1 - piece.hardness * 0.55, 0.48, 0.92);
@@ -1377,6 +1870,7 @@ function compressFace(piece, normal, hitPoint) {
 
   const beforeDims = piece.dims.clone();
   const beforeOffset = piece.offset.clone();
+  const bottomBefore = pieceBox(piece, beforeOffset).min.y;
   const nextSize = oldSize - delta;
   const sideScale = Math.sqrt(oldSize / nextSize);
   piece.dims.setComponent(axis, nextSize);
@@ -1387,19 +1881,29 @@ function compressFace(piece, normal, hitPoint) {
     piece.dims.setComponent(sideAxis, piece.dims.getComponent(sideAxis) * sideScale);
   }
 
-  if (wouldCollide(piece, piece.offset) && !resolveShapeCollision(piece, piece.offset.clone(), delta)) {
+  anchorDeformedPieceToSupport(piece, bottomBefore, axis);
+  if (staticGeometryOverlap(piece, piece.offset) && !liftPieceOutOfStaticCollision(piece)) {
     piece.dims.copy(beforeDims);
     piece.offset.copy(beforeOffset);
     setStatus("forging.status.miss");
     return false;
   }
+  relaxOverlappingPiecesFrom(piece);
 
   piece.heat = Math.max(0, piece.heat - 4);
   triggerHammer(hitPoint, normal);
   refreshPieceGeometry(piece);
   updatePiece(piece);
+  settleAllPieces();
   updateHud();
   return true;
+}
+
+function anchorDeformedPieceToSupport(piece, bottomBefore, compressedAxis) {
+  const bottomAfter = pieceBox(piece, piece.offset).min.y;
+  if (compressedAxis !== 1 || bottomAfter < bottomBefore - 0.0005) {
+    piece.offset.y += bottomBefore - bottomAfter;
+  }
 }
 
 function resolveShapeCollision(piece, originOffset, sizeDelta) {
@@ -1425,6 +1929,136 @@ function resolveShapeCollision(piece, originOffset, sizeDelta) {
     }
   }
   return false;
+}
+
+function liftPieceOutOfStaticCollision(piece) {
+  for (let pass = 0; pass < 4; pass++) {
+    const lift = staticCollisionLiftY(piece, piece.offset);
+    if (lift <= 0) return !staticGeometryOverlap(piece, piece.offset);
+    piece.offset.y += lift;
+  }
+  return !staticGeometryOverlap(piece, piece.offset);
+}
+
+function staticCollisionLiftY(piece, offset) {
+  let lift = 0;
+  for (const component of collisionComponents(piece, offset)) {
+    const boxes = componentIsFullySolid(component)
+      ? [componentBox(component)]
+      : (component.solidCells ?? solidCellsFor(component)).map((cell) => voxelCellBox(component, cell));
+    for (const box of boxes) {
+      for (const staticBox of staticCollisionBoxes) {
+        if (!boxesOverlap(box, staticBox)) continue;
+        lift = Math.max(lift, staticBox.max.y - box.min.y + 0.002);
+      }
+    }
+  }
+  return lift;
+}
+
+function relaxOverlappingPiecesFrom(anchorPiece) {
+  const movedPieces = new Set();
+  for (let pass = 0; pass < 14; pass++) {
+    let movedThisPass = false;
+    for (let index = 0; index < pieces.length; index++) {
+      for (let otherIndex = index + 1; otherIndex < pieces.length; otherIndex++) {
+        const first = pieces[index];
+        const second = pieces[otherIndex];
+        if (!piecesOverlapAtCurrentOffset(first, second)) continue;
+        const mover = overlapMoverForPair(anchorPiece, first, second);
+        if (!mover || mover === anchorPiece) continue;
+        const blocker = mover === first ? second : first;
+        const push = separationVectorForPieces(blocker, mover);
+        if (!push || push.lengthSq() <= 0.000001) continue;
+        if (!movePieceByRelaxation(mover, push, blocker)) continue;
+        movedPieces.add(mover);
+        movedThisPass = true;
+      }
+    }
+    if (!movedThisPass) break;
+  }
+  for (const piece of movedPieces) updatePiece(piece);
+}
+
+function piecesOverlapAtCurrentOffset(a, b) {
+  return boxesOverlap(pieceBox(a, a.offset), pieceBox(b, b.offset)) && voxelShapesOverlap(a, a.offset, b, b.offset);
+}
+
+function overlapMoverForPair(anchorPiece, first, second) {
+  if (first === anchorPiece) return second;
+  if (second === anchorPiece) return first;
+  const firstCenter = pieceBox(first, first.offset).getCenter(new THREE.Vector3());
+  const secondCenter = pieceBox(second, second.offset).getCenter(new THREE.Vector3());
+  return firstCenter.y >= secondCenter.y ? first : second;
+}
+
+function separationVectorForPieces(blocker, mover) {
+  const blockerBox = pieceBox(blocker, blocker.offset);
+  const moverBox = pieceBox(mover, mover.offset);
+  return separationVectorForBoxes(blockerBox, moverBox);
+}
+
+function separationVectorForBoxes(blockerBox, moverBox) {
+  const blockerCenter = blockerBox.getCenter(new THREE.Vector3());
+  const moverCenter = moverBox.getCenter(new THREE.Vector3());
+  const overlaps = [
+    Math.min(blockerBox.max.x - moverBox.min.x, moverBox.max.x - blockerBox.min.x),
+    Math.min(blockerBox.max.y - moverBox.min.y, moverBox.max.y - blockerBox.min.y),
+    Math.min(blockerBox.max.z - moverBox.min.z, moverBox.max.z - blockerBox.min.z),
+  ];
+  if (overlaps.some((value) => value <= 0)) return null;
+  let axis = overlaps.indexOf(Math.min(...overlaps));
+  if (moverCenter.y >= blockerCenter.y && overlaps[1] <= Math.min(overlaps[0], overlaps[2]) * 1.35) axis = 1;
+  const direction = Math.sign(moverCenter.getComponent(axis) - blockerCenter.getComponent(axis)) || (axis === 1 ? 1 : 0);
+  if (!direction) return null;
+  const vector = new THREE.Vector3();
+  vector.setComponent(axis, direction * (overlaps[axis] + 0.018));
+  return vector;
+}
+
+function movePieceByRelaxation(piece, push, blocker) {
+  const candidate = piece.offset.clone().add(push);
+  if (!staticGeometryOverlap(piece, candidate) && !overlapsAnyPieceExcept(piece, candidate, blocker)) {
+    piece.offset.copy(candidate);
+    return true;
+  }
+  const alternatives = relaxationAlternativePushes(push);
+  for (const alternative of alternatives) {
+    const next = piece.offset.clone().add(alternative);
+    if (staticGeometryOverlap(piece, next) || overlapsAnyPieceExcept(piece, next, blocker)) continue;
+    piece.offset.copy(next);
+    return true;
+  }
+  if (!staticGeometryOverlap(piece, candidate)) {
+    piece.offset.copy(candidate);
+    return true;
+  }
+  return false;
+}
+
+function overlapsAnyPieceExcept(piece, offset, exceptPiece) {
+  const nextBox = pieceBox(piece, offset);
+  return pieces.some((other) => (
+    other !== piece &&
+    other !== exceptPiece &&
+    boxesOverlap(nextBox, pieceBox(other, other.offset)) &&
+    voxelShapesOverlap(piece, offset, other, other.offset)
+  ));
+}
+
+function relaxationAlternativePushes(push) {
+  if (Math.abs(push.y) > Math.abs(push.x) && Math.abs(push.y) > Math.abs(push.z)) {
+    return [
+      push.clone().add(new THREE.Vector3(0.045, 0, 0)),
+      push.clone().add(new THREE.Vector3(-0.045, 0, 0)),
+      push.clone().add(new THREE.Vector3(0, 0, 0.045)),
+      push.clone().add(new THREE.Vector3(0, 0, -0.045)),
+    ];
+  }
+  return [
+    push.clone().add(new THREE.Vector3(0, 0.045, 0)),
+    push.clone().multiplyScalar(1.35),
+  ];
 }
 
 function normalizePiece() {
@@ -1481,6 +2115,17 @@ function rotateSelectedPiece(axis) {
   updateHud();
 }
 
+function removeSelectedPiece() {
+  if (!selectedPiece) {
+    setStatus("forging.status.empty");
+    return;
+  }
+
+  removePiece(selectedPiece);
+  setStatus("forging.status.pieceRemoved");
+  updateHud();
+}
+
 function pieceRotationSnapshot(piece) {
   const snapshot = {
     dims: piece.dims.clone(),
@@ -1492,6 +2137,8 @@ function pieceRotationSnapshot(piece) {
     snapshot.grid = { ...piece.grid };
     snapshot.solid = new Uint8Array(piece.solid);
     snapshot.gripOffset = piece.gripOffset?.clone?.() ?? null;
+    snapshot.gripNormal = piece.gripNormal?.clone?.() ?? null;
+    snapshot.gripAngle = piece.gripAngle ?? 0;
   }
   return snapshot;
 }
@@ -1506,11 +2153,15 @@ function restorePieceRotationSnapshot(piece, snapshot) {
   piece.grid = snapshot.grid;
   piece.solid = snapshot.solid;
   piece.gripOffset = snapshot.gripOffset;
+  piece.gripNormal = snapshot.gripNormal;
+  piece.gripAngle = snapshot.gripAngle ?? 0;
 }
 
 function cloneComponent(component) {
   return {
     ...component,
+    backpackMaterialEntryKeys: [...(component.backpackMaterialEntryKeys ?? [])],
+    fullSolid: Boolean(component.fullSolid),
     color: component.color?.clone?.() ?? component.color,
     dims: component.dims.clone(),
     offset: component.offset.clone(),
@@ -1518,6 +2169,8 @@ function cloneComponent(component) {
     solid: new Uint8Array(component.solid),
     solidCells: component.solidCells?.map((cell) => [...cell]),
     gripOffset: component.gripOffset?.clone?.() ?? null,
+    gripNormal: component.gripNormal?.clone?.() ?? null,
+    gripAngle: component.gripAngle ?? 0,
   };
 }
 
@@ -1553,6 +2206,7 @@ function rotatePieceVoxels(piece, axis) {
   if (axis === "y") piece.dims.set(oldDims.z, oldDims.y, oldDims.x);
   if (axis === "z") piece.dims.set(oldDims.y, oldDims.x, oldDims.z);
   if (piece.gripOffset) piece.gripOffset.copy(rotatedVector(piece.gripOffset, axis));
+  if (piece.gripNormal) piece.gripNormal.copy(rotatedVector(piece.gripNormal, axis).normalize());
 }
 
 function rotatePieceComponents(piece, axis) {
@@ -1560,6 +2214,7 @@ function rotatePieceComponents(piece, axis) {
     rotateComponentVoxels(component, axis);
     component.offset.copy(rotatedVector(component.offset, axis));
     if (component.gripOffset) component.gripOffset.copy(rotatedVector(component.gripOffset, axis));
+    if (component.gripNormal) component.gripNormal.copy(rotatedVector(component.gripNormal, axis).normalize());
   }
   piece.dims.copy(localBoundsForPieces([piece]).getSize(new THREE.Vector3()));
 }
@@ -1753,6 +2408,7 @@ function clearWorkbench() {
   pieces.length = 0;
   selectableMeshes.length = 0;
   selectedPiece = null;
+  syncUsedBackpackMaterialEntriesFromWorkbench();
   updateMoveGizmo();
   markEquipmentPreviewDirty();
   faceMarker.visible = false;
@@ -1870,6 +2526,8 @@ function serializeDraftPiece(piece) {
   const base = {
     resourceId: piece.resourceId,
     materialIds: [...(piece.materialIds ?? [])],
+    backpackMaterialEntryKey: piece.backpackMaterialEntryKey ?? null,
+    backpackMaterialEntryKeys: [...(piece.backpackMaterialEntryKeys ?? [])],
     role: piece.role,
     color: `#${piece.color?.getHexString?.() ?? "ffffff"}`,
     heat: piece.heat,
@@ -1892,6 +2550,8 @@ function serializeDraftPiece(piece) {
       grid: { ...piece.grid },
       solid: Array.from(piece.solid),
       gripOffset: piece.gripOffset ? vectorToArray(piece.gripOffset) : null,
+      gripNormal: piece.gripNormal ? vectorToArray(piece.gripNormal) : null,
+      gripAngle: piece.gripAngle ?? 0,
     };
   }
   return {
@@ -1899,6 +2559,8 @@ function serializeDraftPiece(piece) {
     grid: { ...piece.grid },
     solid: Array.from(piece.solid),
     gripOffset: piece.gripOffset ? vectorToArray(piece.gripOffset) : null,
+    gripNormal: piece.gripNormal ? vectorToArray(piece.gripNormal) : null,
+    gripAngle: piece.gripAngle ?? 0,
   };
 }
 
@@ -1908,6 +2570,8 @@ function serializeDraftAppearance(appearance) {
     grid: { ...(appearance.grid ?? appearanceGrid) },
     quads: (appearance.quads ?? []).map((quad) => ({ ...quad })),
     gripOffset: appearance.gripOffset ? vectorToArray(appearance.gripOffset) : null,
+    gripNormal: appearance.gripNormal ? vectorToArray(appearance.gripNormal) : null,
+    gripAngle: appearance.gripAngle ?? 0,
   };
 }
 
@@ -1915,6 +2579,8 @@ function serializeDraftComponent(component) {
   return {
     resourceId: component.resourceId,
     materialIds: [...(component.materialIds ?? [])],
+    backpackMaterialEntryKey: component.backpackMaterialEntryKey ?? null,
+    backpackMaterialEntryKeys: [...(component.backpackMaterialEntryKeys ?? [])],
     role: component.role,
     color: `#${component.color?.getHexString?.() ?? "ffffff"}`,
     baseMass: component.baseMass,
@@ -1923,6 +2589,8 @@ function serializeDraftComponent(component) {
     grid: { ...component.grid },
     solid: Array.from(component.solid),
     gripOffset: component.gripOffset ? vectorToArray(component.gripOffset) : null,
+    gripNormal: component.gripNormal ? vectorToArray(component.gripNormal) : null,
+    gripAngle: component.gripAngle ?? 0,
   };
 }
 
@@ -1950,6 +2618,7 @@ function loadWorkbenchDraftState(state, fallbackCode = "") {
   const selectedIndex = Number.isInteger(state.selectedIndex) ? THREE.MathUtils.clamp(state.selectedIndex, 0, pieces.length - 1) : 0;
   selectPiece(pieces[selectedIndex]);
   selectTool("gloves");
+  syncUsedBackpackMaterialEntriesFromWorkbench();
   updateHud();
   return true;
 }
@@ -1979,6 +2648,7 @@ function castWorkbench() {
   scene.add(castPiece.mesh, castPiece.edges);
   selectPiece(castPiece);
   selectTool("gloves");
+  syncUsedBackpackMaterialEntriesFromWorkbench();
   setStatus("forging.status.castComplete");
   updatePiece(castPiece);
   updateHud();
@@ -1987,6 +2657,7 @@ function castWorkbench() {
 function createCastPieceFromPieces(sourcePieces) {
   const bounds = localBoundsForPieces(sourcePieces);
   const castOffset = bounds.getCenter(new THREE.Vector3());
+  const castComponents = [];
   const materialIds = [];
   const materialMass = new Map();
   let heat = 0;
@@ -1997,15 +2668,18 @@ function createCastPieceFromPieces(sourcePieces) {
     heat += piece.heat ?? 0;
     for (const component of componentsFromPiece(piece)) {
       const resourceId = component.resourceId ?? piece.resourceId ?? "iron";
-      if (!materialIds.includes(resourceId)) materialIds.push(resourceId);
+      for (const materialId of component.materialIds?.length ? component.materialIds : [resourceId]) {
+        if (!materialIds.includes(materialId)) materialIds.push(materialId);
+      }
       const componentMass = component.baseMass ?? resources[resourceId]?.mass ?? piece.baseMass ?? 1;
       baseMass += componentMass;
       materialMass.set(resourceId, (materialMass.get(resourceId) ?? 0) + componentMass);
+      castComponents.push(cloneComponentForCast(piece, component, castOffset));
     }
     hardness = Math.max(hardness, piece.hardness ?? 0.5);
   }
   const primaryResourceId = primaryMaterialId(materialMass);
-  const appearance = createAppearanceBlueprintFromPieces(sourcePieces, castOffset);
+  const backpackMaterialEntryKeys = [...new Set(sourcePieces.flatMap(backpackMaterialEntryKeysForPiece))];
 
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -2026,6 +2700,7 @@ function createCastPieceFromPieces(sourcePieces) {
     id: nextPieceId++,
     resourceId: primaryResourceId,
     materialIds,
+    backpackMaterialEntryKeys,
     color: new THREE.Color(0xffffff),
     heat: sourcePieces.length ? heat / sourcePieces.length : 0,
     mass: 0,
@@ -2033,10 +2708,12 @@ function createCastPieceFromPieces(sourcePieces) {
     hardness,
     dims: bounds.getSize(new THREE.Vector3()),
     offset: castOffset,
-    appearance,
+    components: castComponents,
     grid: { ...appearanceGrid },
     solid: createSolidVoxels(appearanceGrid),
-    gripOffset: appearance.gripOffset?.clone?.() ?? null,
+    gripOffset: gripOffsetForPieces(sourcePieces, castOffset),
+    gripNormal: gripNormalForPieces(sourcePieces),
+    gripAngle: gripAngleForPieces(sourcePieces),
     mesh,
     edges,
   };
@@ -2044,11 +2721,37 @@ function createCastPieceFromPieces(sourcePieces) {
   return castPiece;
 }
 
+function cloneComponentForCast(piece, component, castOffset) {
+  const resourceId = component.resourceId ?? piece.resourceId ?? "iron";
+  const worldComponentOffset = piece.offset.clone().add(component.offset ?? new THREE.Vector3());
+  const color = component.color?.clone?.()
+    ?? piece.color?.clone?.()
+    ?? new THREE.Color(resources[resourceId]?.color ?? resources.iron.color);
+  return {
+    resourceId,
+    materialIds: [...(component.materialIds?.length ? component.materialIds : piece.materialIds ?? [resourceId])],
+    backpackMaterialEntryKey: component.backpackMaterialEntryKey ?? piece.backpackMaterialEntryKey ?? null,
+    backpackMaterialEntryKeys: [...(component.backpackMaterialEntryKeys ?? [])],
+    role: component.role ?? piece.role ?? resources[resourceId]?.role,
+    color,
+    baseMass: component.baseMass ?? piece.baseMass ?? resources[resourceId]?.mass ?? 1,
+    dims: component.dims.clone(),
+    offset: worldComponentOffset.sub(castOffset),
+    grid: { ...component.grid },
+    solid: new Uint8Array(component.solid),
+    gripOffset: component.gripOffset?.clone?.().add(piece.offset).sub(castOffset) ?? null,
+    gripNormal: component.gripNormal?.clone?.() ?? null,
+    gripAngle: component.gripAngle ?? 0,
+  };
+}
+
 function createAppearanceBlueprintFromPieces(sourcePieces, origin) {
   const bounds = localBoundsForPieces(sourcePieces);
   const dims = bounds.getSize(new THREE.Vector3());
   const solid = new Uint8Array(appearanceGrid.x * appearanceGrid.y * appearanceGrid.z);
-  const material = new Uint8Array(solid.length);
+  const material = new Uint16Array(solid.length);
+  const palette = [];
+  const paletteIndexes = new Map();
   const cell = new THREE.Vector3(
     dims.x / appearanceGrid.x,
     dims.y / appearanceGrid.y,
@@ -2067,7 +2770,7 @@ function createAppearanceBlueprintFromPieces(sourcePieces, origin) {
         if (!hit) continue;
         const index = voxelIndex(appearanceGrid, x, y, z);
         solid[index] = 1;
-        material[index] = Math.max(0, resourceIds.indexOf(hit.resourceId));
+        material[index] = appearancePaletteIndex(palette, paletteIndexes, hit);
       }
     }
   }
@@ -2075,8 +2778,10 @@ function createAppearanceBlueprintFromPieces(sourcePieces, origin) {
   return {
     dims,
     grid: { ...appearanceGrid },
-    quads: buildAppearanceQuads(solid, material, appearanceGrid),
+    quads: buildAppearanceQuads(solid, material, appearanceGrid, palette),
     gripOffset: gripOffsetForPieces(sourcePieces, origin),
+    gripNormal: gripNormalForPieces(sourcePieces),
+    gripAngle: gripAngleForPieces(sourcePieces),
   };
 }
 
@@ -2084,10 +2789,31 @@ function materialAtPoint(sourcePieces, point) {
   for (const piece of sourcePieces) {
     for (const component of componentsFromPiece(piece)) {
       if (!componentContainsPoint(piece, component, point)) continue;
-      return { resourceId: component.resourceId ?? piece.resourceId ?? "iron" };
+      const resourceId = component.resourceId ?? piece.resourceId ?? "iron";
+      const color = component.color ?? piece.color ?? new THREE.Color(resources[resourceId]?.color ?? resources.iron.color);
+      return {
+        resourceId,
+        materialIds: [...(component.materialIds?.length ? component.materialIds : piece.materialIds ?? [resourceId])],
+        color,
+      };
     }
   }
   return null;
+}
+
+function appearancePaletteIndex(palette, paletteIndexes, hit) {
+  const resourceId = hit.resourceId ?? "iron";
+  const color = hit.color instanceof THREE.Color
+    ? `#${hit.color.getHexString()}`
+    : `#${new THREE.Color(hit.color ?? resources[resourceId]?.color ?? resources.iron.color).getHexString()}`;
+  const materialIds = [...(hit.materialIds?.length ? hit.materialIds : [resourceId])];
+  const key = `${resourceId}:${color}:${materialIds.join(",")}`;
+  const existing = paletteIndexes.get(key);
+  if (existing !== undefined) return existing;
+  const index = palette.length;
+  palette.push({ resourceId, color, materialIds });
+  paletteIndexes.set(key, index);
+  return index;
 }
 
 function componentContainsPoint(piece, component, point) {
@@ -2106,26 +2832,44 @@ function componentContainsPoint(piece, component, point) {
 function gripOffsetForPieces(sourcePieces, origin) {
   for (const piece of sourcePieces) {
     for (const component of componentsFromPiece(piece)) {
-      if (!component.gripOffset && component.role !== "grip" && component.resourceId !== "handle") continue;
+      if (!component.gripOffset) continue;
       const grip = component.gripOffset
-        ? component.gripOffset.clone().add(piece.offset)
-        : piece.offset.clone().add(component.offset);
+        .clone()
+        .add(piece.offset);
       return grip.sub(origin);
     }
   }
   return null;
 }
 
-function buildAppearanceQuads(solid, material, gridSize) {
+function gripNormalForPieces(sourcePieces) {
+  for (const piece of sourcePieces) {
+    for (const component of componentsFromPiece(piece)) {
+      if (component.gripNormal) return component.gripNormal.clone();
+    }
+  }
+  return null;
+}
+
+function gripAngleForPieces(sourcePieces) {
+  for (const piece of sourcePieces) {
+    for (const component of componentsFromPiece(piece)) {
+      if (component.gripOffset) return component.gripAngle ?? 0;
+    }
+  }
+  return 0;
+}
+
+function buildAppearanceQuads(solid, material, gridSize, palette = null) {
   const quads = [];
   for (let axis = 0; axis < 3; axis++) {
-    collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, 1);
-    collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, 0);
+    collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, 1, palette);
+    collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, 0, palette);
   }
   return quads;
 }
 
-function collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, side) {
+function collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, side, palette = null) {
   const axisNames = ["x", "y", "z"];
   const uAxis = axis === 0 ? 1 : 0;
   const vAxis = axis === 2 ? 1 : 2;
@@ -2149,7 +2893,7 @@ function collectAppearanceQuadsForSide(quads, solid, material, gridSize, axis, s
         if (inside > 0 && outside === 0) mask[u + uSize * v] = inside;
       }
     }
-    greedyMaskToQuads(quads, mask, uSize, vSize, axis, side, plane);
+      greedyMaskToQuads(quads, mask, uSize, vSize, axis, side, plane, palette);
   }
 }
 
@@ -2159,7 +2903,7 @@ function appearanceCellValue(solid, material, gridSize, x, y, z) {
   return solid[index] ? material[index] + 1 : 0;
 }
 
-function greedyMaskToQuads(quads, mask, width, height, axis, side, plane) {
+function greedyMaskToQuads(quads, mask, width, height, axis, side, plane, palette = null) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const value = mask[x + width * y];
@@ -2177,6 +2921,7 @@ function greedyMaskToQuads(quads, mask, width, height, axis, side, plane) {
       for (let dy = 0; dy < runHeight; dy++) {
         for (let dx = 0; dx < runWidth; dx++) mask[x + dx + width * (y + dy)] = 0;
       }
+      const paletteEntry = palette?.[value - 1] ?? null;
       quads.push({
         axis,
         side,
@@ -2185,7 +2930,9 @@ function greedyMaskToQuads(quads, mask, width, height, axis, side, plane) {
         u1: x + runWidth,
         v0: y,
         v1: y + runHeight,
-        resourceId: resourceIds[value - 1] ?? "iron",
+        resourceId: paletteEntry?.resourceId ?? resourceIds[value - 1] ?? "iron",
+        color: paletteEntry?.color ?? null,
+        materialIds: paletteEntry?.materialIds ? [...paletteEntry.materialIds] : [],
       });
     }
   }
@@ -2207,6 +2954,7 @@ function componentsFromPiece(piece) {
   if (piece.components) return piece.components;
   return [{
     resourceId: piece.resourceId,
+    materialIds: [...(piece.materialIds ?? [])],
     role: piece.role,
     color: piece.color,
     baseMass: piece.baseMass,
@@ -2215,6 +2963,8 @@ function componentsFromPiece(piece) {
     grid: piece.grid,
     solid: piece.solid,
     gripOffset: piece.gripOffset?.clone?.() ?? null,
+    gripNormal: piece.gripNormal?.clone?.() ?? null,
+    gripAngle: piece.gripAngle ?? 0,
   }];
 }
 
@@ -2322,6 +3072,8 @@ function forgeBlueprintFromPieces(sourcePieces) {
         grid: { ...component.grid },
         solid: new Uint8Array(component.solid),
         gripOffset: component.gripOffset?.clone?.().add(piece.offset).sub(origin) ?? null,
+        gripNormal: component.gripNormal?.clone?.() ?? null,
+        gripAngle: component.gripAngle ?? 0,
       });
     }
   }
@@ -2751,6 +3503,7 @@ function updatePiece(piece) {
   piece.edges.position.copy(piece.mesh.position);
   piece.edges.material.opacity = piece === selectedPiece ? 1 : 0.38;
   updateMoveGizmo();
+  updateGripBindingMarker();
   markEquipmentPreviewDirty();
 }
 
@@ -2760,6 +3513,7 @@ function selectPiece(piece) {
     item.edges.material.opacity = item === selectedPiece ? 1 : 0.38;
   }
   updateMoveGizmo();
+  updateGripBindingMarker();
   updateHud();
 }
 
@@ -2830,6 +3584,9 @@ function voxelShapesOverlap(a, aOffset, b, bOffset) {
 }
 
 function componentVoxelsOverlap(a, b) {
+  if (componentIsFullySolid(a) && componentIsFullySolid(b)) return true;
+  if (componentIsFullySolid(a)) return solidCellsOverlapBox(b, componentBox(a));
+  if (componentIsFullySolid(b)) return solidCellsOverlapBox(a, componentBox(b));
   const cellsA = a.solidCells ?? solidCellsFor(a);
   const cellsB = b.solidCells ?? solidCellsFor(b);
   for (const cellA of cellsA) {
@@ -2841,8 +3598,27 @@ function componentVoxelsOverlap(a, b) {
   return false;
 }
 
+function componentIsFullySolid(component) {
+  if (component.fullSolid !== undefined) return Boolean(component.fullSolid);
+  const cells = component.solidCells ?? solidCellsFor(component);
+  return cells.length === component.grid.x * component.grid.y * component.grid.z;
+}
+
+function solidCellsOverlapBox(component, box) {
+  const cells = component.solidCells ?? solidCellsFor(component);
+  for (const cell of cells) {
+    if (boxesOverlap(voxelCellBox(component, cell), box)) return true;
+  }
+  return false;
+}
+
 function staticGeometryOverlap(piece, offset) {
   for (const component of collisionComponents(piece, offset)) {
+    if (componentIsFullySolid(component)) {
+      const box = componentBox(component);
+      if (staticCollisionBoxes.some((staticBox) => boxesOverlap(box, staticBox))) return true;
+      continue;
+    }
     const cells = component.solidCells ?? solidCellsFor(component);
     for (const cell of cells) {
       const box = voxelCellBox(component, cell);
@@ -2897,7 +3673,7 @@ function boxOverlapsSurfaceXZ(box, surface) {
 function updateHud() {
   const piece = selectedPiece;
   const materialNames = piece ? [...new Set(piece.materialIds)]
-    .map((id) => t(resources[id].nameKey))
+    .map((id) => materialDisplayName(id))
     .join(" + ") : "";
   materialValue.textContent = materialNames || "-";
   heatValue.textContent = piece ? t("forging.percent", { value: Math.round(piece.heat) }) : t("forging.percent", { value: 0 });
@@ -2921,23 +3697,149 @@ function markEquipmentPreviewDirty() {
 function updateEquipmentPreview() {
   if (!equipmentPreviewDirty) return;
   equipmentPreviewDirty = false;
-  const nextCode = pieces.length ? encodeForgeCode(forgeBlueprintFromPieces(pieces)) : "";
-  if (nextCode === previewCode) return;
-  previewCode = nextCode;
   try {
-    forgeAvatarEquippedMesh = equipForgedItemOnAvatar({
+    forgeAvatarEquippedMesh = equipPreviewMeshOnAvatar({
       avatar: forgeAvatar,
-      code: previewCode,
+      mesh: createWorkbenchPreviewMesh(pieces),
       currentMesh: forgeAvatarEquippedMesh,
     });
+    previewCode = pieces.length ? "workbench" : "";
   } catch (error) {
     console.warn("Failed to update equipment preview", error);
-    forgeAvatarEquippedMesh = equipForgedItemOnAvatar({
+    forgeAvatarEquippedMesh = equipPreviewMeshOnAvatar({
       avatar: forgeAvatar,
-      code: "",
+      mesh: null,
       currentMesh: forgeAvatarEquippedMesh,
     });
     previewCode = "";
+  }
+}
+
+function createWorkbenchPreviewMesh(sourcePieces) {
+  if (!sourcePieces.length) return null;
+  const geometry = createWorkbenchPreviewGeometry(sourcePieces);
+  if (!geometry.getAttribute("position")?.count) {
+    geometry.dispose();
+    return null;
+  }
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.68,
+    metalness: 0.45,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "equippedForgedItem";
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  const gripPlacement = previewGripPlacementForPieces(sourcePieces);
+  mesh.userData.grip = gripPlacement?.offset ?? null;
+  mesh.userData.gripNormal = gripPlacement?.normal ?? null;
+  mesh.userData.gripAngle = gripPlacement?.angle ?? 0;
+  if (!mesh.userData.grip || !mesh.userData.gripNormal) {
+    disposePreviewMesh(mesh);
+    return null;
+  }
+  return mesh;
+}
+
+function createWorkbenchPreviewGeometry(sourcePieces) {
+  if (sourcePieces.length === 1 && sourcePieces[0].appearance) {
+    return buildAppearanceGeometry(sourcePieces[0].appearance);
+  }
+  const bounds = localBoundsForPieces(sourcePieces);
+  const origin = bounds.getCenter(new THREE.Vector3());
+  const components = [];
+  for (const piece of sourcePieces) {
+    for (const component of componentsFromPiece(piece)) {
+      components.push({
+        ...component,
+        materialIds: [...(component.materialIds ?? [])],
+        color: (component.color ?? piece.color ?? new THREE.Color(resources[component.resourceId]?.color ?? resources.iron.color)).clone(),
+        dims: component.dims.clone(),
+        offset: component.offset.clone().add(piece.offset).sub(origin),
+        grid: { ...component.grid },
+        solid: new Uint8Array(component.solid),
+        gripOffset: component.gripOffset?.clone?.().add(piece.offset).sub(origin) ?? null,
+        gripNormal: component.gripNormal?.clone?.() ?? null,
+        gripAngle: component.gripAngle ?? 0,
+      });
+    }
+  }
+  return buildCompoundGeometry({ components });
+}
+
+function previewGripOffsetForPieces(sourcePieces) {
+  if (sourcePieces.length === 1 && sourcePieces[0].appearance) {
+    return sourcePieces[0].gripOffset?.clone?.() ?? sourcePieces[0].appearance.gripOffset?.clone?.() ?? null;
+  }
+  const bounds = localBoundsForPieces(sourcePieces);
+  const origin = bounds.getCenter(new THREE.Vector3());
+  return gripOffsetForPieces(sourcePieces, origin);
+}
+
+function previewGripPlacementForPieces(sourcePieces) {
+  if (sourcePieces.length === 1 && sourcePieces[0].appearance) {
+    const piece = sourcePieces[0];
+    const offset = piece.gripOffset?.clone?.() ?? piece.appearance.gripOffset?.clone?.() ?? null;
+    const normal = piece.gripNormal?.clone?.() ?? piece.appearance.gripNormal?.clone?.() ?? null;
+    if (!offset || !normal) return null;
+    return { offset, normal, angle: piece.gripAngle ?? piece.appearance.gripAngle ?? 0 };
+  }
+  const bounds = localBoundsForPieces(sourcePieces);
+  const origin = bounds.getCenter(new THREE.Vector3());
+  for (const piece of sourcePieces) {
+    for (const component of componentsFromPiece(piece)) {
+      if (!component.gripOffset || !component.gripNormal) continue;
+      return {
+        offset: component.gripOffset.clone().add(piece.offset).sub(origin),
+        normal: component.gripNormal.clone(),
+        angle: component.gripAngle ?? 0,
+      };
+    }
+  }
+  return null;
+}
+
+function equipPreviewMeshOnAvatar({ avatar, mesh, currentMesh = null, scale = 1 }) {
+  const { rightArm } = avatar?.userData?.limbs ?? {};
+  if (!rightArm) {
+    disposePreviewMesh(mesh);
+    return null;
+  }
+  if (currentMesh) {
+    rightArm.remove(currentMesh);
+    disposePreviewMesh(currentMesh);
+  }
+  if (!mesh) return null;
+
+  const grip = mesh.userData.grip;
+  const gripNormal = mesh.userData.gripNormal;
+  if (!grip || !gripNormal) {
+    disposePreviewMesh(mesh);
+    return null;
+  }
+  const handBottomAnchor = new THREE.Vector3(0, -0.99, -0.02);
+  mesh.scale.setScalar(scale);
+  const gripBasis = gripSurfaceBasis(gripNormal, mesh.userData.gripAngle ?? 0);
+  const handApproach = new THREE.Vector3(0, -1, 0);
+  const handFront = new THREE.Vector3(0, 0, -1);
+  const handSide = new THREE.Vector3().crossVectors(handFront, handApproach).normalize();
+  const sourceMatrix = new THREE.Matrix4().makeBasis(gripBasis.side, gripBasis.front, gripBasis.approach);
+  const targetMatrix = new THREE.Matrix4().makeBasis(handSide, handFront, handApproach);
+  mesh.quaternion.setFromRotationMatrix(targetMatrix.multiply(sourceMatrix.invert()));
+  const gripOffset = grip.clone().multiplyScalar(scale).applyQuaternion(mesh.quaternion);
+  mesh.position.copy(handBottomAnchor).sub(gripOffset);
+  rightArm.add(mesh);
+  return mesh;
+}
+
+function disposePreviewMesh(mesh) {
+  if (!mesh) return;
+  mesh.geometry?.dispose?.();
+  if (Array.isArray(mesh.material)) {
+    for (const material of mesh.material) material.dispose?.();
+  } else {
+    mesh.material?.dispose?.();
   }
 }
 
@@ -2997,6 +3899,23 @@ function showToolSettingsMenu(x, y) {
 function hideToolSettingsMenu() {
   toolSettingsMenu.hidden = true;
   toolSettingsMenu.setAttribute("aria-hidden", "true");
+}
+
+function showForgeContextMenu(x, y) {
+  if (!forgeContextMenu) return;
+  forgeContextMenu.hidden = false;
+  forgeContextMenu.setAttribute("aria-hidden", "false");
+  const rect = forgeContextMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  forgeContextMenu.style.left = `${Math.max(8, left)}px`;
+  forgeContextMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideForgeContextMenu() {
+  if (!forgeContextMenu) return;
+  forgeContextMenu.hidden = true;
+  forgeContextMenu.setAttribute("aria-hidden", "true");
 }
 
 function rotateSawAngle() {
@@ -3080,6 +3999,7 @@ function renderToolHotbar() {
 function selectTool(toolId) {
   const tool = tools.find((item) => item.id === toolId && !item.disabled);
   if (!tool) return;
+  hideForgeContextMenu();
   if (tool.id !== selectedTool) finishShapeToolAction();
   const wasMoving = selectedTool === "gloves";
   selectedTool = tool.id;
@@ -3093,6 +4013,8 @@ function selectTool(toolId) {
     setStatus("forging.status.sawReady");
   } else if (selectedTool === "handDrill") {
     setStatus("forging.status.drillReady");
+  } else if (selectedTool === "grip") {
+    setStatus("forging.status.gripReady");
   } else {
     setStatus("forging.status.toolPending");
   }
@@ -3103,6 +4025,7 @@ function updateToolMode() {
   moveEnabled = selectedTool === "gloves";
   sawEnabled = selectedTool === "saw";
   drillEnabled = selectedTool === "handDrill";
+  gripEnabled = selectedTool === "grip";
   hammerModeButton.classList.toggle("active", hammerEnabled);
   hammerModeButton.setAttribute("aria-pressed", String(hammerEnabled));
   toolHotbar.querySelectorAll(".tool-slot").forEach((button) => {
@@ -3115,16 +4038,19 @@ function updateToolMode() {
   }
   if (!sawEnabled) saw.visible = false;
   if (!drillEnabled) handDrill.visible = false;
+  if (!gripEnabled) gripHand.visible = false;
+  if (!hammerEnabled) {
+    strike = null;
+    hammer.visible = false;
+  }
   if (sawEnabled || !drillEnabled) {
     hideToolSettingsMenu();
   } else if (!toolSettingsMenu.hidden) {
     renderToolSettingsMenu();
   }
-  if (!hammerEnabled) {
+  if (!hammerEnabled && !gripEnabled) {
     faceMarker.visible = false;
     hoveredFace = null;
-    strike = null;
-    hammer.visible = false;
   }
   canvas.style.cursor = cursorForTool(selectedTool);
   updateMoveGizmo();
@@ -3137,15 +4063,17 @@ function updatePointer(event) {
 }
 
 function updateHoveredFace() {
-  if (!pieces.length || (!hammerEnabled && !sawEnabled && !drillEnabled) || activeDrag) {
+  if (!pieces.length || (!hammerEnabled && !sawEnabled && !drillEnabled && !gripEnabled) || activeDrag) {
     hoveredFace = null;
     faceMarker.visible = false;
+    gripHand.visible = false;
     return;
   }
   const target = toolTargetFromPointer({ allowSelectedFallback: false });
   if (!target) {
     hoveredFace = null;
     faceMarker.visible = false;
+    gripHand.visible = false;
     return;
   }
   hoveredFace = target;
@@ -3154,8 +4082,25 @@ function updateHoveredFace() {
 
 function placeFaceMarker(target) {
   const { piece, localPoint, normal } = target;
-  if (piece.components) {
+  if (piece.components && !gripEnabled) {
     faceMarker.visible = false;
+    return;
+  }
+  if (gripEnabled) {
+    const grip = gripCandidateFromTarget(target);
+    if (!grip) {
+      faceMarker.visible = false;
+      gripHand.visible = false;
+      return;
+    }
+    const marker = grip.marker ?? buildGripPointMarkerGeometry(piece, localPoint, normal);
+    setGripMarkerStyle(grip.valid);
+    faceMarker.visible = true;
+    faceMarker.position.copy(piece.mesh.position);
+    faceMarker.rotation.set(0, 0, 0);
+    faceMarker.scale.set(1, 1, 1);
+    setFaceMarkerGeometry(marker.surface, marker.lines);
+    placeGripHand(target, grip);
     return;
   }
   const hitCell = surfaceCellFromLocalPoint(piece, localPoint, normal);
@@ -3179,7 +4124,321 @@ function placeFaceMarker(target) {
   faceMarker.position.copy(piece.mesh.position);
   faceMarker.rotation.set(0, 0, 0);
   faceMarker.scale.set(1, 1, 1);
+  setDefaultFaceMarkerStyle();
   setFaceMarkerGeometry(marker.surface, marker.lines);
+}
+
+function setDefaultFaceMarkerStyle() {
+  faceMarkerSurface.material.color.set(0xffc76a);
+  faceMarkerSurface.material.opacity = 0.24;
+  faceMarkerLines.material.color.set(0xfff1a8);
+}
+
+function setGripMarkerStyle(valid) {
+  faceMarkerSurface.material.color.set(valid ? 0x45ff8a : 0xff5d4c);
+  faceMarkerSurface.material.opacity = valid ? 0.34 : 0.28;
+  faceMarkerLines.material.color.set(valid ? 0xc5ffd8 : 0xffb4a8);
+}
+
+function gripCandidateFromTarget(target, options = {}) {
+  if (!target?.piece) return null;
+  const { piece, localPoint, normal } = target;
+  const normalAxis = dominantAxis(normal);
+  const hitCell = piece.components ? null : surfaceCellFromLocalPoint(piece, localPoint, normal);
+  if (!piece.components && (!hitCell || !isExposedSurfaceCell(piece, hitCell, normal))) return null;
+  const footprintA = avatarHandGripFootprint.x;
+  const footprintB = avatarHandGripFootprint.y;
+  const region = piece.components
+    ? gripBoundingFaceRegion(piece, localPoint, normalAxis)
+    : gripSurfaceRegionForCell(piece, hitCell, normal);
+  if (!region) return null;
+  const angle = currentGripGestureAngle();
+  const fit = evaluateGripFit(footprintA, footprintB, region.sizeA, region.sizeB);
+  if (options.log) logGripFitMetrics({
+    context: options.context ?? "grip",
+    piece,
+    normal,
+    normalAxis,
+    region,
+    fit,
+  });
+  const gripLocalPoint = gripLocalPointForRegion(localPoint, normal, region, footprintA, footprintB);
+  return {
+    valid: fit.valid,
+    localPoint: gripLocalPoint,
+    normal: normal.clone(),
+    angle,
+    marker: buildGripPlacementMarkerGeometry(piece, gripLocalPoint, normal, footprintA, footprintB, angle),
+  };
+}
+
+function gripFootprintCoversRegion(footprintA, footprintB, regionA, regionB) {
+  return evaluateGripFit(footprintA, footprintB, regionA, regionB).valid;
+}
+
+function evaluateGripFit(footprintA, footprintB, regionA, regionB) {
+  const epsilon = 0.0005;
+  const footprintArea = footprintA * footprintB;
+  const regionArea = regionA * regionB;
+  const palmSpan = Math.max(footprintA, footprintB);
+  const itemNarrowSpan = Math.min(regionA, regionB);
+  const areaFits = regionArea <= footprintArea + epsilon;
+  const narrowSpanFits = itemNarrowSpan <= palmSpan + epsilon;
+  return {
+    valid: areaFits || narrowSpanFits,
+    reason: areaFits ? "area-fits" : narrowSpanFits ? "narrow-span-fits" : "area-and-span-too-large",
+    palmWidth: footprintA,
+    palmHeight: footprintB,
+    palmArea: footprintArea,
+    palmSpan,
+    itemWidth: regionA,
+    itemHeight: regionB,
+    itemArea: regionArea,
+    itemNarrowSpan,
+    epsilon,
+  };
+}
+
+function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit }) {
+  const metrics = {
+    context,
+    valid: fit.valid,
+    reason: fit.reason,
+    palmArea: Number(fit.palmArea.toFixed(6)),
+    itemArea: Number(fit.itemArea.toFixed(6)),
+    palmWidth: Number(fit.palmWidth.toFixed(4)),
+    palmHeight: Number(fit.palmHeight.toFixed(4)),
+    itemWidth: Number(fit.itemWidth.toFixed(4)),
+    itemHeight: Number(fit.itemHeight.toFixed(4)),
+    palmSpan: Number(fit.palmSpan.toFixed(4)),
+    itemNarrowSpan: Number(fit.itemNarrowSpan.toFixed(4)),
+    pieceDims: {
+      x: Number(piece.dims.x.toFixed(4)),
+      y: Number(piece.dims.y.toFixed(4)),
+      z: Number(piece.dims.z.toFixed(4)),
+    },
+    normal: {
+      x: Number(normal.x.toFixed(4)),
+      y: Number(normal.y.toFixed(4)),
+      z: Number(normal.z.toFixed(4)),
+    },
+    normalAxis,
+    regionSource: region.source ?? "surface",
+  };
+  window.NicechunkForgingGripDebug = metrics;
+  console.info("[NiceChunk Forging Grip]", metrics);
+}
+
+function gripSurfaceRegionForCell(piece, hitCell, normal) {
+  const normalAxis = dominantAxis(normal);
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const axes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  const wholeFace = gripWholeFaceRegionForSolidPiece(piece, normalAxis, sign, axes);
+  if (wholeFace) return wholeFace;
+  const layer = hitCell[normalAxis];
+  const grid = [piece.grid.x, piece.grid.y, piece.grid.z];
+  const dims = [piece.dims.x, piece.dims.y, piece.dims.z];
+  let minA = Infinity;
+  let maxA = -Infinity;
+  let minB = Infinity;
+  let maxB = -Infinity;
+  const visited = new Set();
+  const pending = [hitCell];
+  const keyFor = (cell) => `${cell[0]},${cell[1]},${cell[2]}`;
+  const isSameSurfaceCell = (cell) => (
+    cell[normalAxis] === layer &&
+    isSolid(piece, cell[0], cell[1], cell[2]) &&
+    !isSolid(
+      piece,
+      cell[0] + (normalAxis === 0 ? sign : 0),
+      cell[1] + (normalAxis === 1 ? sign : 0),
+      cell[2] + (normalAxis === 2 ? sign : 0),
+    )
+  );
+  while (pending.length) {
+    const cell = pending.pop();
+    const key = keyFor(cell);
+    if (visited.has(key) || !isSameSurfaceCell(cell)) continue;
+    visited.add(key);
+    minA = Math.min(minA, cell[axes[0]]);
+    maxA = Math.max(maxA, cell[axes[0]] + 1);
+    minB = Math.min(minB, cell[axes[1]]);
+    maxB = Math.max(maxB, cell[axes[1]] + 1);
+    for (const delta of [-1, 1]) {
+      const nextA = [...cell];
+      nextA[axes[0]] += delta;
+      if (!visited.has(keyFor(nextA))) pending.push(nextA);
+      const nextB = [...cell];
+      nextB[axes[1]] += delta;
+      if (!visited.has(keyFor(nextB))) pending.push(nextB);
+    }
+  }
+  if (minA === Infinity) {
+    minA = hitCell[axes[0]];
+    maxA = minA + 1;
+    minB = hitCell[axes[1]];
+    maxB = minB + 1;
+  }
+  const cellA = dims[axes[0]] / grid[axes[0]];
+  const cellB = dims[axes[1]] / grid[axes[1]];
+  return {
+    source: "connected-surface",
+    axes,
+    minA: -dims[axes[0]] * 0.5 + minA * cellA,
+    maxA: -dims[axes[0]] * 0.5 + maxA * cellA,
+    minB: -dims[axes[1]] * 0.5 + minB * cellB,
+    maxB: -dims[axes[1]] * 0.5 + maxB * cellB,
+    sizeA: (maxA - minA) * cellA,
+    sizeB: (maxB - minB) * cellB,
+    plane: -dims[normalAxis] * 0.5 +
+      (sign > 0 ? layer + 1 : layer) * dims[normalAxis] / grid[normalAxis],
+  };
+}
+
+function gripWholeFaceRegionForSolidPiece(piece, normalAxis, sign, axes) {
+  if (!piece || piece.components) return null;
+  const totalCells = piece.grid.x * piece.grid.y * piece.grid.z;
+  const solidCount = piece.solidCells?.length ?? solidCellsFor(piece).length;
+  if (solidCount !== totalCells) return null;
+  const dims = [piece.dims.x, piece.dims.y, piece.dims.z];
+  return {
+    source: "whole-solid-face",
+    axes,
+    minA: -dims[axes[0]] * 0.5,
+    maxA: dims[axes[0]] * 0.5,
+    minB: -dims[axes[1]] * 0.5,
+    maxB: dims[axes[1]] * 0.5,
+    sizeA: dims[axes[0]],
+    sizeB: dims[axes[1]],
+    plane: sign > 0 ? dims[normalAxis] * 0.5 : -dims[normalAxis] * 0.5,
+  };
+}
+
+function gripBoundingFaceRegion(piece, localPoint, normalAxis) {
+  if (!piece.mesh.geometry.boundingBox) piece.mesh.geometry.computeBoundingBox();
+  const box = piece.mesh.geometry.boundingBox;
+  if (!box) return null;
+  const axes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  const minA = box.min.getComponent(axes[0]);
+  const maxA = box.max.getComponent(axes[0]);
+  const minB = box.min.getComponent(axes[1]);
+  const maxB = box.max.getComponent(axes[1]);
+  return {
+    source: "bounding-face",
+    axes,
+    minA,
+    maxA,
+    minB,
+    maxB,
+    sizeA: maxA - minA,
+    sizeB: maxB - minB,
+    plane: localPoint.getComponent(normalAxis),
+  };
+}
+
+function gripLocalPointForRegion(localPoint, normal, region, footprintA, footprintB) {
+  const normalAxis = dominantAxis(normal);
+  const coordinate = [localPoint.x, localPoint.y, localPoint.z];
+  coordinate[normalAxis] = region.plane;
+  return new THREE.Vector3(coordinate[0], coordinate[1], coordinate[2]);
+}
+
+function buildGripPlacementMarkerGeometry(piece, localPoint, normal, footprintA = avatarHandGripFootprint.x, footprintB = avatarHandGripFootprint.y, angle = 0) {
+  const normalAxis = dominantAxis(normal);
+  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
+  const basis = gripSurfaceBasis(normal, angle);
+  const center = localPoint.clone();
+  center.setComponent(normalAxis, center.getComponent(normalAxis) + sign * 0.012);
+  const halfA = footprintA * 0.5;
+  const halfB = footprintB * 0.5;
+  const corners = [
+    [-halfA, -halfB],
+    [halfA, -halfB],
+    [halfA, halfB],
+    [-halfA, halfB],
+  ].map(([a, b]) => center.clone()
+    .add(basis.side.clone().multiplyScalar(a))
+    .add(basis.front.clone().multiplyScalar(b))
+    .toArray());
+  const surface = [];
+  const lines = [];
+  pushFace(surface, [], corners, [normal.x, normal.y, normal.z]);
+  pushLineLoop(lines, corners);
+  return { surface, lines };
+}
+
+function buildGripPointMarkerGeometry(piece, localPoint, normal) {
+  const size = Math.max(0.08, Math.min(piece.dims?.x ?? 0.24, piece.dims?.y ?? 0.24, piece.dims?.z ?? 0.24) * 0.22);
+  const normalAxis = dominantAxis(normal);
+  const axes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  const center = [localPoint.x, localPoint.y, localPoint.z];
+  center[normalAxis] += (Math.sign(normal.getComponent(normalAxis)) || 1) * 0.012;
+  const corners = [
+    [-size, -size],
+    [size, -size],
+    [size, size],
+    [-size, size],
+  ].map(([a, b]) => {
+    const coordinate = [...center];
+    coordinate[axes[0]] += a;
+    coordinate[axes[1]] += b;
+    return coordinate;
+  });
+  const surface = [];
+  const lines = [];
+  pushFace(surface, [], corners, [normal.x, normal.y, normal.z]);
+  pushLineLoop(lines, corners);
+  return { surface, lines };
+}
+
+function currentGripGestureAngle() {
+  return normalizeGripAngle(gripGestureRotationStep * gripGestureRotationStepRadians);
+}
+
+function normalizeGripAngle(angle) {
+  const value = Number(angle) || 0;
+  const fullTurn = Math.PI * 2;
+  return ((value % fullTurn) + fullTurn) % fullTurn;
+}
+
+function rotateGripGesture() {
+  gripGestureRotationStep = (gripGestureRotationStep + 1) % 4;
+  setStatus("forging.status.gripReady");
+}
+
+function gripSurfaceBasis(normal, angle = 0) {
+  const approach = normal.clone().normalize();
+  let front;
+  if (Math.abs(approach.y) < 0.75) {
+    front = new THREE.Vector3(0, 1, 0);
+  } else {
+    front = new THREE.Vector3(0, 0, -Math.sign(approach.y) || -1);
+  }
+  front.sub(approach.clone().multiplyScalar(front.dot(approach)));
+  if (front.lengthSq() < 0.0001) front.set(1, 0, 0);
+  front.normalize();
+  if (angle) front.applyAxisAngle(approach, angle).normalize();
+  const side = new THREE.Vector3().crossVectors(front, approach).normalize();
+  return { side, front, approach };
+}
+
+function placeGripHand(target, grip) {
+  const { piece, point, normal } = target;
+  const valid = Boolean(grip?.valid);
+  gripHand.visible = true;
+  const { side, front, approach } = gripSurfaceBasis(normal, grip?.angle ?? currentGripGestureAngle());
+  const gripPoint = grip?.localPoint
+    ? piece.mesh.localToWorld(grip.localPoint.clone())
+    : point.clone();
+  const matrix = new THREE.Matrix4().makeBasis(side, front, approach);
+  gripHand.quaternion.setFromRotationMatrix(matrix);
+  gripHand.position.copy(gripPoint)
+    .add(approach.clone().multiplyScalar(avatarHandGripSize.z * 0.5 + 0.018))
+    .add(front.clone().multiplyScalar(0.015));
+  gripHand.traverse((child) => {
+    if (!child.isMesh) return;
+    child.material.color.set(valid ? 0x40ff88 : 0xff5d4c);
+  });
 }
 
 function setFaceMarkerGeometry(surfacePositions, linePositions) {
@@ -3189,6 +4448,30 @@ function setFaceMarkerGeometry(surfacePositions, linePositions) {
   faceMarkerLines.geometry = positionsGeometry(linePositions);
   faceMarkerSurface.visible = surfacePositions.length > 0;
   faceMarkerLines.visible = linePositions.length > 0;
+}
+
+function updateGripBindingMarker() {
+  const piece = selectedPiece;
+  if (!piece?.gripOffset || !piece.gripNormal) {
+    gripBindingMarker.visible = false;
+    return;
+  }
+  const marker = buildGripPlacementMarkerGeometry(
+    piece,
+    piece.gripOffset,
+    piece.gripNormal,
+    avatarHandGripFootprint.x,
+    avatarHandGripFootprint.y,
+    piece.gripAngle ?? 0,
+  );
+  gripBindingMarker.visible = true;
+  gripBindingMarker.position.copy(piece.mesh.position);
+  gripBindingMarker.rotation.set(0, 0, 0);
+  gripBindingMarker.scale.set(1, 1, 1);
+  gripBindingSurface.geometry.dispose();
+  gripBindingLines.geometry.dispose();
+  gripBindingSurface.geometry = positionsGeometry(marker.surface);
+  gripBindingLines.geometry = positionsGeometry(marker.lines);
 }
 
 function positionsGeometry(positions) {
@@ -3381,8 +4664,13 @@ function beginShapeToolAction() {
 
 function toolTargetFromPointer(options = {}) {
   const allowSelectedFallback = options.allowSelectedFallback ?? true;
+  const preferSelected = options.preferSelected ?? false;
   raycaster.setFromCamera(pointer, camera);
-  const hit = raycaster.intersectObjects(selectableMeshes, false)[0];
+  const hits = raycaster.intersectObjects(selectableMeshes, false);
+  const selectedHit = preferSelected && selectedPiece
+    ? hits.find((item) => pieceFromObject(item.object) === selectedPiece)
+    : null;
+  const hit = selectedHit ?? hits[0];
   if (hit) {
     const piece = pieceFromObject(hit.object);
     if (!piece) return null;
@@ -3631,8 +4919,10 @@ function removePiece(piece) {
   if (meshIndex >= 0) selectableMeshes.splice(meshIndex, 1);
   scene.remove(piece.mesh, piece.edges);
   disposePiece(piece);
-  if (selectedPiece === piece) selectedPiece = pieces[0] ?? null;
+  if (selectedPiece === piece) selectedPiece = null;
+  syncUsedBackpackMaterialEntriesFromWorkbench();
   updateMoveGizmo();
+  updateGripBindingMarker();
   markEquipmentPreviewDirty();
   faceMarker.visible = false;
 }
@@ -3765,7 +5055,11 @@ function createMoveDrag(event, options = {}) {
     if (nextPiece) selectPiece(nextPiece);
   }
 
-  if (!pieceHit && !allowPlaneDrag) return null;
+  if (!pieceHit) {
+    selectPiece(null);
+    if (!allowPlaneDrag) return null;
+    return null;
+  }
 
   const dragPoint = intersectPointerPlane(selectedPiece.mesh.position.y);
   if (!dragPoint) return null;
@@ -3881,6 +5175,16 @@ function resize() {
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
+  const elapsed = clock.elapsedTime;
+  if (forgeFireBlocks.length) {
+    const pulse = 1 + Math.sin(elapsed * 4.2) * 0.08;
+    forgeFireBlocks.forEach((block, index) => {
+      const offsetPulse = pulse + Math.sin(elapsed * 5.1 + index) * 0.035;
+      block.scale.setScalar(offsetPulse);
+      if (block.material?.opacity !== undefined) block.material.opacity = 0.72 + Math.sin(elapsed * 4.8 + index) * 0.12;
+    });
+    forgeFireLight.intensity = 2.1 + Math.sin(elapsed * 4.2) * 0.45;
+  }
   if (toolAction) {
     toolAction.elapsed += Math.min(dt, 1 / 30);
     toolAction.stepTimer += dt;
