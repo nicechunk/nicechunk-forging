@@ -28,6 +28,7 @@ const materialValue = document.querySelector("#materialValue");
 const heatValue = document.querySelector("#heatValue");
 const massValue = document.querySelector("#massValue");
 const shapeValue = document.querySelector("#shapeValue");
+const attributePanel = document.querySelector("#attributePanel");
 const normalizeButton = document.querySelector("#normalizePiece");
 const clearButton = document.querySelector("#clearPiece");
 const castButton = document.querySelector("#castPiece");
@@ -50,11 +51,11 @@ const toolHotbar = document.querySelector("#toolHotbar");
 await initI18n();
 
 const resources = {
-  iron: { color: 0x9ca4a2, heat: 18, mass: 12, hardness: 0.88, dims: [1.18, 0.72, 1.02], nameKey: "forging.resource.iron.name" },
-  copper: { color: 0xb96d45, heat: 12, mass: 10, hardness: 0.56, dims: [1.02, 0.62, 0.92], nameKey: "forging.resource.copper.name" },
-  tin: { color: 0xc8cfbd, heat: 10, mass: 8, hardness: 0.42, dims: [0.92, 0.56, 0.84], nameKey: "forging.resource.tin.name" },
-  coal: { color: 0x2d2b28, heat: 38, mass: 2, hardness: 0.2, nameKey: "forging.resource.coal.name", fuel: true },
-  handle: { color: 0x7b5438, heat: 6, mass: 4, hardness: 0.34, dims: [0.42, 1.18, 0.42], nameKey: "forging.resource.handle.name", role: "grip" },
+  iron: { color: 0x9ca4a2, heat: 18, mass: 12, densityKgM3: 5200, hardness: 0.88, dims: [1.18, 0.72, 1.02], nameKey: "forging.resource.iron.name" },
+  copper: { color: 0xb96d45, heat: 12, mass: 10, densityKgM3: 5600, hardness: 0.56, dims: [1.02, 0.62, 0.92], nameKey: "forging.resource.copper.name" },
+  tin: { color: 0xc8cfbd, heat: 10, mass: 8, densityKgM3: 7300, hardness: 0.42, dims: [0.92, 0.56, 0.84], nameKey: "forging.resource.tin.name" },
+  coal: { color: 0x2d2b28, heat: 38, mass: 2, densityKgM3: 1350, hardness: 0.2, nameKey: "forging.resource.coal.name", fuel: true },
+  handle: { color: 0x7b5438, heat: 6, mass: 4, densityKgM3: 720, hardness: 0.34, dims: [0.42, 1.18, 0.42], nameKey: "forging.resource.handle.name", role: "grip" },
 };
 const forgeMetersPerSceneUnit = DEFAULT_RESOURCE_DIMENSIONS_M.width;
 const defaultResourceVolumeMm3 = Math.round(
@@ -124,9 +125,11 @@ const toolCursorUrls = Object.fromEntries([
 ]);
 const avatarHandGripSize = new THREE.Vector3(0.34, 0.42, 0.32);
 const avatarHandGripFootprint = new THREE.Vector2(avatarHandGripSize.x, avatarHandGripSize.y);
+const avatarGripHandAnchor = new THREE.Vector3(0, -0.99, 0);
 const gripGestureRotationStepRadians = Math.PI / 2;
 const gripContactVisualOffset = 0.012;
 const gripContactConformDepth = avatarHandGripSize.z * 0.55;
+const gripHandEmbedDepth = Math.min(avatarHandGripSize.z * 0.22, gripContactConformDepth * 0.45);
 const minimumGripContactCoverage = 0.18;
 
 const scene = new THREE.Scene();
@@ -160,6 +163,7 @@ let equipmentPreviewDirty = true;
 const gripFailureAnimations = [];
 const gripCollisionAttemptAnimations = [];
 const gripCollisionFlashAnimations = [];
+const avatarCollisionProbeFlashAnimations = [];
 const avatarCollisionPartFlashAnimations = [];
 
 scene.add(new THREE.HemisphereLight(0xf8fbff, 0x6d704f, 3.35));
@@ -197,6 +201,7 @@ let strike = null;
 let toolAction = null;
 let activeDrag = null;
 let activeDraftId = localStorage.getItem(activeForgeDraftStorageKey) || "";
+let activeDraftContextId = "";
 const activeTouchPointers = new Map();
 let pinchGesture = null;
 let currentChainCode = "";
@@ -205,6 +210,8 @@ const toolSettings = {
   drill: { size: 3 },
 };
 const toolSettingsMenu = createToolSettingsMenu();
+const draftContextMenu = createDraftContextMenu();
+renderDraftContextMenu();
 
 const forgeRoot = new THREE.Group();
 scene.add(forgeRoot);
@@ -392,6 +399,7 @@ window.addEventListener("nicechunk:languagechange", () => {
   updateHud();
   renderToolHotbar();
   renderDraftList();
+  renderDraftContextMenu();
   renderBackpackMaterials();
   updateAxisLabels();
   renderToolSettingsMenu();
@@ -463,6 +471,10 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape" && forgeContextMenu && !forgeContextMenu.hidden) {
     hideForgeContextMenu();
+    return;
+  }
+  if (event.key === "Escape" && draftContextMenu && !draftContextMenu.hidden) {
+    hideDraftContextMenu();
     return;
   }
   if (event.key === "Escape" && chainModal.classList.contains("open")) {
@@ -665,6 +677,7 @@ canvas.addEventListener("contextmenu", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   if (forgeContextMenu && !forgeContextMenu.hidden && !forgeContextMenu.contains(event.target)) hideForgeContextMenu();
+  if (draftContextMenu && !draftContextMenu.hidden && !draftContextMenu.contains(event.target)) hideDraftContextMenu();
   if (!toolSettingsMenu.hidden && !toolSettingsMenu.contains(event.target)) hideToolSettingsMenu();
 });
 
@@ -1211,8 +1224,9 @@ function createPiece(resourceId, materialProfile = null) {
     role: resource.role,
     color: new THREE.Color(resource.color),
     heat: resource.heat,
-    mass: resource.mass,
-    baseMass: resource.mass,
+    mass: 0,
+    baseMass: 0,
+    densityKgM3: materialProfile?.densityKgM3 ?? resource.densityKgM3 ?? materialDensityKgM3(),
     hardness: resource.hardness,
     backpackMaterialEntryKey: materialProfile?.entryKey ?? null,
     dims: new THREE.Vector3(...resource.dims),
@@ -1222,6 +1236,8 @@ function createPiece(resourceId, materialProfile = null) {
     mesh,
     edges,
   };
+  piece.baseMass = componentFullMassKg(piece);
+  piece.mass = componentMassKg(piece);
   refreshPieceGeometry(piece);
   return piece;
 }
@@ -1232,10 +1248,11 @@ function applyMaterialProfileToPiece(piece, materialProfile = null) {
   piece.role = materialProfile.role;
   piece.color = new THREE.Color(materialProfile.color);
   piece.heat = materialProfile.heat;
-  piece.mass = materialProfile.mass;
-  piece.baseMass = materialProfile.mass;
+  piece.densityKgM3 = materialProfile.densityKgM3;
   piece.hardness = materialProfile.hardness;
   piece.dims = new THREE.Vector3(...materialProfile.dims);
+  piece.baseMass = componentFullMassKg(piece);
+  piece.mass = componentMassKg(piece);
   piece.mesh.material.color.set(materialProfile.color);
 }
 
@@ -1256,6 +1273,7 @@ function materialForgeProfile(materialId, entry = null) {
     fuel: Boolean(fuel),
     heat: fuel ? Math.max(base.heat, fuel.heatTier * 18) : Math.max(6, material.requiredHeatTier * 9 + Math.round((attributes.heatResistance ?? 0) / 8)),
     mass: materialMassForForgeUse(entry?.volumeMm3, attributes),
+    densityKgM3: materialDensityKgM3(attributes),
     hardness: Math.max(0.12, Math.min(0.98, (attributes.hardness ?? 50) / 100)),
     dims: materialDimsForForgeUse(entry?.volumeMm3),
     role: materialRoleForForgeUse(material.forgeUse, base.role),
@@ -1289,6 +1307,89 @@ function materialMassForForgeUse(volumeMm3 = 0, attributes = {}) {
 
 function materialDensityKgM3(attributes = {}) {
   return Math.max(50, (Number(attributes.density) || 45) * 100);
+}
+
+function materialDensityForIds(materialIds = [], resourceId = "iron") {
+  for (const materialId of materialIds ?? []) {
+    const material = smeltingMaterialById(materialId);
+    if (!material) continue;
+    return materialDensityKgM3(smeltingMaterialBaseAttributes(material));
+  }
+  return resources[resourceId]?.densityKgM3 ?? materialDensityKgM3();
+}
+
+function componentSolidCount(component) {
+  let solidCount = 0;
+  for (const value of component?.solid ?? []) if (value) solidCount++;
+  return solidCount;
+}
+
+function componentFullVolumeM3(component) {
+  if (!component?.dims) return 0;
+  return Math.max(0, component.dims.x * component.dims.y * component.dims.z * forgeMetersPerSceneUnit ** 3);
+}
+
+function componentSolidVolumeM3(component) {
+  if (!component?.solid?.length) return 0;
+  return componentFullVolumeM3(component) * (componentSolidCount(component) / component.solid.length);
+}
+
+function componentMassKg(component) {
+  const densityKgM3 = component?.densityKgM3 ?? materialDensityForIds(component?.materialIds, component?.resourceId);
+  return roundPhysicalValue(componentSolidVolumeM3(component) * densityKgM3, 4);
+}
+
+function componentFullMassKg(component) {
+  const densityKgM3 = component?.densityKgM3 ?? materialDensityForIds(component?.materialIds, component?.resourceId);
+  return roundPhysicalValue(componentFullVolumeM3(component) * densityKgM3, 4);
+}
+
+function weightedDensityForComponents(components = []) {
+  let totalMass = 0;
+  let totalVolume = 0;
+  for (const component of components) {
+    totalMass += componentMassKg(component);
+    totalVolume += componentSolidVolumeM3(component);
+  }
+  return totalVolume > 0 ? roundPhysicalValue(totalMass / totalVolume, 2) : materialDensityKgM3();
+}
+
+function pieceSolidVolumeM3(piece) {
+  if (!piece) return 0;
+  if (piece.components) return piece.components.reduce((sum, component) => sum + componentSolidVolumeM3(component), 0);
+  return componentSolidVolumeM3(piece);
+}
+
+function pieceWeightedDensityKgM3(piece) {
+  const volume = pieceSolidVolumeM3(piece);
+  return volume > 0 ? roundPhysicalValue((piece?.mass ?? 0) / volume, 2) : piece?.densityKgM3 ?? materialDensityForIds(piece?.materialIds, piece?.resourceId);
+}
+
+function roundPhysicalValue(value, decimals = 3) {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function formatMassKg(value) {
+  const mass = Number(value) || 0;
+  if (mass > 0 && mass < 0.001) return "<0.001 kg";
+  if (mass < 1) return `${mass.toFixed(3)} kg`;
+  if (mass < 10) return `${mass.toFixed(2)} kg`;
+  return `${mass.toFixed(1)} kg`;
+}
+
+function formatVolumeLiters(valueM3) {
+  const liters = (Number(valueM3) || 0) * 1000;
+  if (liters > 0 && liters < 0.001) return "<0.001 L";
+  if (liters < 1) return `${liters.toFixed(3)} L`;
+  if (liters < 10) return `${liters.toFixed(2)} L`;
+  return `${liters.toFixed(1)} L`;
+}
+
+function formatDensityKgM3(value) {
+  const density = Number(value) || 0;
+  return `${Math.round(density).toLocaleString()} kg/m3`;
 }
 
 function metersToForgeSceneUnits(value) {
@@ -1336,12 +1437,13 @@ function createPieceFromComponent(component) {
   const piece = {
     id: nextPieceId++,
     resourceId,
-    materialIds: [resourceId],
+    materialIds: [...(component.materialIds?.length ? component.materialIds : [resourceId])],
     role: component.role ?? resource.role,
     color: new THREE.Color(resource.color),
     heat: resource.heat,
-    mass: resource.mass,
-    baseMass: resource.mass,
+    mass: 0,
+    baseMass: 0,
+    densityKgM3: component.densityKgM3 ?? materialDensityForIds(component.materialIds, resourceId),
     hardness: resource.hardness,
     dims: component.dims.clone(),
     offset: component.offset.clone(),
@@ -1351,6 +1453,8 @@ function createPieceFromComponent(component) {
     mesh,
     edges,
   };
+  piece.baseMass = componentFullMassKg(piece);
+  piece.mass = componentMassKg(piece);
   refreshPieceGeometry(piece);
   return piece;
 }
@@ -1373,8 +1477,9 @@ function createPieceFromAppearance(appearance) {
     materialIds: [...new Set((appearance.quads ?? []).map((quad) => quad.resourceId).filter((id) => resources[id]))],
     color: new THREE.Color(0xffffff),
     heat: 0,
-    mass: 1,
-    baseMass: 1,
+    mass: 0,
+    baseMass: 0,
+    densityKgM3: resources.iron.densityKgM3,
     hardness: 0.5,
     dims: appearance.dims.clone(),
     offset: new THREE.Vector3(),
@@ -1422,6 +1527,7 @@ function createPieceFromDraft(snapshot) {
     heat: finiteNumber(snapshot.heat, resource.heat),
     mass: finiteNumber(snapshot.mass, resource.mass),
     baseMass: finiteNumber(snapshot.baseMass, resource.mass),
+    densityKgM3: finiteNumber(snapshot.densityKgM3, materialDensityForIds(snapshot.materialIds, resourceId)),
     hardness: finiteNumber(snapshot.hardness, resource.hardness),
     dims: vectorFromArray(snapshot.dims, new THREE.Vector3(...(resource.dims ?? [1, 1, 1]))),
     offset: vectorFromArray(snapshot.offset, new THREE.Vector3()),
@@ -1464,6 +1570,7 @@ function deserializeDraftComponent(component) {
     role: component.role ?? resource.role,
     color: new THREE.Color(component.color ?? resource.color),
     baseMass: finiteNumber(component.baseMass, resource.mass),
+    densityKgM3: finiteNumber(component.densityKgM3, materialDensityForIds(component.materialIds, resourceId)),
     dims: vectorFromArray(component.dims, new THREE.Vector3(...(resource.dims ?? [1, 1, 1]))),
     offset: vectorFromArray(component.offset, new THREE.Vector3()),
     grid: { ...grid },
@@ -1733,18 +1840,14 @@ function pushColoredFace(positions, normals, colors, corners, normal, color) {
 
 function updatePieceMass(piece) {
   if (piece.components) {
-    piece.mass = piece.components.reduce((sum, component) => {
-      let solidCount = 0;
-      for (const value of component.solid) if (value) solidCount++;
-      const ratio = solidCount / component.solid.length;
-      return sum + component.baseMass * ratio;
-    }, 0);
+    piece.mass = roundPhysicalValue(piece.components.reduce((sum, component) => sum + componentMassKg(component), 0), 4);
+    piece.baseMass = roundPhysicalValue(piece.components.reduce((sum, component) => sum + componentFullMassKg(component), 0), 4);
+    piece.densityKgM3 = weightedDensityForComponents(piece.components);
     return;
   }
-  let solidCount = 0;
-  for (const value of piece.solid) if (value) solidCount++;
-  const ratio = solidCount / piece.solid.length;
-  piece.mass = Math.max(0.1, piece.baseMass * ratio);
+  piece.densityKgM3 = piece.densityKgM3 ?? materialDensityForIds(piece.materialIds, piece.resourceId);
+  piece.baseMass = componentFullMassKg(piece);
+  piece.mass = componentMassKg(piece);
 }
 
 function updateSolidCells(piece) {
@@ -1858,11 +1961,13 @@ function setGripFromPointer() {
     if (grip?.blockedByAvatarCollision) {
       playGripCollisionFailureAnimation(target.piece, grip);
     } else {
+      clearGripCollisionFeedback();
       playGripFailureDropAnimation(target.piece, grip);
     }
     setStatus(grip?.blockedByAvatarCollision ? "forging.status.gripBlocked" : "forging.status.gripTooLarge");
     return;
   }
+  clearGripCollisionFeedback();
   assignGripOffset(target.piece, grip.localPoint, grip.normal, grip.angle);
   selectPiece(target.piece);
   setStatus("forging.status.gripSet");
@@ -1999,18 +2104,31 @@ function pointStillOnSurfacePlane(piece, localPoint, normal, normalAxis) {
 }
 
 function compoundGripBindingStillValid(piece, localPoint, normal, normalAxis) {
-  if (!piece.mesh.geometry.boundingBox) piece.mesh.geometry.computeBoundingBox();
-  const box = piece.mesh.geometry.boundingBox;
-  if (!box) return false;
-  const sign = Math.sign(normal.getComponent(normalAxis)) || 1;
-  const plane = sign > 0 ? box.max.getComponent(normalAxis) : box.min.getComponent(normalAxis);
-  if (Math.abs(localPoint.getComponent(normalAxis) - plane) > 0.018) return false;
-  const region = gripBoundingFaceRegion(piece, localPoint, normalAxis);
+  const componentGrip = compoundGripSurfaceForLocalPoint(piece, localPoint, normal);
+  if (!componentGrip) return false;
+  localPoint = componentGrip.localPoint;
+  const region = componentGrip.region;
   if (!region || !pointWithinGripRegion(localPoint, region)) return false;
-  return (
-    evaluateGripFit(avatarHandGripFootprint.x, avatarHandGripFootprint.y, region.sizeA, region.sizeB, { normalAxis }).valid &&
-    !gripCandidateCollidesWithAvatar(piece, localPoint, normal, piece.gripAngle ?? 0)
+  const marker = buildCompoundGripPlacementMarkerGeometry(
+    componentGrip,
+    localPoint,
+    normal,
+    avatarHandGripFootprint.x,
+    avatarHandGripFootprint.y,
+    piece.gripAngle ?? 0,
   );
+  const fit = evaluateGripFit(avatarHandGripFootprint.x, avatarHandGripFootprint.y, region.sizeA, region.sizeB, {
+    normalAxis,
+    contactArea: marker.contactArea,
+    foldedArea: marker.foldedArea,
+    patchCount: marker.patchCount,
+  });
+  if (!fit.valid) return false;
+  if (gripCandidateCollidesWithAvatar(piece, localPoint, normal, piece.gripAngle ?? 0, {
+    sourcePieces: componentGrip.sourcePieces,
+  })) return false;
+  if (!localPoint.equals(piece.gripOffset)) piece.gripOffset.copy(localPoint);
+  return true;
 }
 
 function pointWithinGripRegion(localPoint, region) {
@@ -2661,9 +2779,56 @@ function renderDraftList() {
     savedAt.textContent = draft.savedAt ? dateFormatter.format(new Date(draft.savedAt)) : "";
     button.append(title, savedAt);
     button.addEventListener("click", () => loadDraft(draft.id));
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showDraftContextMenu(draft.id, event.clientX, event.clientY);
+      hideForgeContextMenu();
+      hideToolSettingsMenu();
+    });
     return button;
   });
   draftList.replaceChildren(...entries);
+}
+
+function renameDraft(draftId) {
+  const drafts = loadForgeDrafts();
+  const index = drafts.findIndex((draft) => draft.id === draftId);
+  if (index < 0) {
+    hideDraftContextMenu();
+    renderDraftList();
+    return;
+  }
+  const currentName = drafts[index].name || t("forging.draftName", { index: index + 1 });
+  hideDraftContextMenu();
+  const nextName = window.prompt(t("forging.draftRenamePrompt"), currentName);
+  if (nextName == null) return;
+  const trimmed = nextName.trim();
+  if (!trimmed) return;
+  drafts[index] = { ...drafts[index], name: trimmed.slice(0, 64) };
+  writeForgeDrafts(drafts);
+  renderDraftList();
+  setStatus("forging.status.draftRenamed");
+}
+
+function deleteDraft(draftId) {
+  const drafts = loadForgeDrafts();
+  const draft = drafts.find((item) => item.id === draftId);
+  if (!draft) {
+    hideDraftContextMenu();
+    renderDraftList();
+    return;
+  }
+  hideDraftContextMenu();
+  if (!window.confirm(t("forging.draftDeleteConfirm", { name: draft.name || t("forging.draftName", { index: 1 }) }))) return;
+  const remaining = drafts.filter((item) => item.id !== draftId);
+  writeForgeDrafts(remaining);
+  if (activeDraftId === draftId) {
+    activeDraftId = "";
+    localStorage.removeItem(activeForgeDraftStorageKey);
+  }
+  renderDraftList();
+  setStatus("forging.status.draftDeleted");
 }
 
 function loadDraft(draftId) {
@@ -2699,6 +2864,7 @@ function serializeDraftPiece(piece) {
     heat: piece.heat,
     mass: piece.mass,
     baseMass: piece.baseMass,
+    densityKgM3: piece.densityKgM3,
     hardness: piece.hardness,
     dims: vectorToArray(piece.dims),
     offset: vectorToArray(piece.offset),
@@ -2750,6 +2916,7 @@ function serializeDraftComponent(component) {
     role: component.role,
     color: `#${component.color?.getHexString?.() ?? "ffffff"}`,
     baseMass: component.baseMass,
+    densityKgM3: component.densityKgM3,
     dims: vectorToArray(component.dims),
     offset: vectorToArray(component.offset),
     grid: { ...component.grid },
@@ -2837,7 +3004,7 @@ function createCastPieceFromPieces(sourcePieces) {
       for (const materialId of component.materialIds?.length ? component.materialIds : [resourceId]) {
         if (!materialIds.includes(materialId)) materialIds.push(materialId);
       }
-      const componentMass = component.baseMass ?? resources[resourceId]?.mass ?? piece.baseMass ?? 1;
+      const componentMass = componentMassKg(component);
       baseMass += componentMass;
       materialMass.set(resourceId, (materialMass.get(resourceId) ?? 0) + componentMass);
       castComponents.push(cloneComponentForCast(piece, component, castOffset));
@@ -2871,6 +3038,7 @@ function createCastPieceFromPieces(sourcePieces) {
     heat: sourcePieces.length ? heat / sourcePieces.length : 0,
     mass: 0,
     baseMass,
+    densityKgM3: weightedDensityForComponents(castComponents),
     hardness,
     dims: bounds.getSize(new THREE.Vector3()),
     offset: castOffset,
@@ -2900,7 +3068,8 @@ function cloneComponentForCast(piece, component, castOffset) {
     backpackMaterialEntryKeys: [...(component.backpackMaterialEntryKeys ?? [])],
     role: component.role ?? piece.role ?? resources[resourceId]?.role,
     color,
-    baseMass: component.baseMass ?? piece.baseMass ?? resources[resourceId]?.mass ?? 1,
+    baseMass: componentFullMassKg(component),
+    densityKgM3: component.densityKgM3 ?? piece.densityKgM3 ?? materialDensityForIds(component.materialIds ?? piece.materialIds, resourceId),
     dims: component.dims.clone(),
     offset: worldComponentOffset.sub(castOffset),
     grid: { ...component.grid },
@@ -3124,6 +3293,7 @@ function componentsFromPiece(piece) {
     role: piece.role,
     color: piece.color,
     baseMass: piece.baseMass,
+    densityKgM3: piece.densityKgM3,
     dims: piece.dims,
     offset: new THREE.Vector3(),
     grid: piece.grid,
@@ -3843,8 +4013,7 @@ function updateHud() {
     .join(" + ") : "";
   materialValue.textContent = materialNames || "-";
   heatValue.textContent = piece ? t("forging.percent", { value: Math.round(piece.heat) }) : t("forging.percent", { value: 0 });
-  const mass = piece?.mass ? Number(piece.mass.toFixed(1)) : 0;
-  massValue.textContent = piece ? t("forging.massValue", { value: mass }) : "0";
+  massValue.textContent = piece ? formatMassKg(piece.mass) : "0 kg";
   const shape = piece
     ? t("forging.shapeValue", {
         x: piece.dims.x.toFixed(2),
@@ -3854,6 +4023,61 @@ function updateHud() {
     : "-";
   shapeValue.textContent = shape;
   shapeText.textContent = shape;
+  renderAttributePanel(piece);
+}
+
+function renderAttributePanel(piece) {
+  if (!attributePanel) return;
+  if (!piece) {
+    attributePanel.replaceChildren();
+    return;
+  }
+  const header = document.createElement("div");
+  header.className = "attribute-panel-head";
+  const title = document.createElement("strong");
+  title.textContent = t("forging.attributes");
+  const detail = document.createElement("span");
+  detail.textContent = piece.components?.length
+    ? t("forging.componentCount", { count: piece.components.length })
+    : t("forging.singleComponent");
+  header.append(title, detail);
+
+  const stats = document.createElement("div");
+  stats.className = "attribute-grid";
+  for (const [label, value] of [
+    [t("forging.attributeWeight"), formatMassKg(piece.mass)],
+    [t("forging.attributeVolume"), formatVolumeLiters(pieceSolidVolumeM3(piece))],
+    [t("forging.attributeDensity"), formatDensityKgM3(pieceWeightedDensityKgM3(piece))],
+  ]) {
+    const row = document.createElement("div");
+    const key = document.createElement("span");
+    key.textContent = label;
+    const data = document.createElement("b");
+    data.textContent = value;
+    row.append(key, data);
+    stats.append(row);
+  }
+
+  const breakdown = document.createElement("div");
+  breakdown.className = "attribute-breakdown";
+  for (const component of attributeComponentsForPiece(piece).slice(0, 8)) {
+    const item = document.createElement("div");
+    const name = document.createElement("span");
+    name.textContent = materialDisplayName(component.materialIds?.[0] ?? component.resourceId);
+    const values = document.createElement("b");
+    values.textContent = `${formatMassKg(componentMassKg(component))} · ${formatVolumeLiters(componentSolidVolumeM3(component))}`;
+    item.append(name, values);
+    breakdown.append(item);
+  }
+
+  attributePanel.replaceChildren(header, stats, breakdown);
+}
+
+function attributeComponentsForPiece(piece) {
+  if (!piece) return [];
+  if (piece.components?.length) return piece.components;
+  if (piece.appearance) return [];
+  return [piece];
 }
 
 function markEquipmentPreviewDirty() {
@@ -3866,10 +4090,10 @@ function updateEquipmentPreview() {
   try {
     forgeAvatarEquippedMesh = equipPreviewMeshOnAvatar({
       avatar: forgeAvatar,
-      mesh: createWorkbenchPreviewMesh(pieces),
+      mesh: createWorkbenchPreviewMesh(equipmentPreviewSourcePieces()),
       currentMesh: forgeAvatarEquippedMesh,
     });
-    previewCode = pieces.length ? "workbench" : "";
+    previewCode = equipmentPreviewSourcePieces().length ? "workbench" : "";
   } catch (error) {
     console.warn("Failed to update equipment preview", error);
     forgeAvatarEquippedMesh = equipPreviewMeshOnAvatar({
@@ -3879,6 +4103,13 @@ function updateEquipmentPreview() {
     });
     previewCode = "";
   }
+}
+
+function equipmentPreviewSourcePieces() {
+  const gripAnchor = (selectedPiece && pieceHasGripBinding(selectedPiece))
+    ? selectedPiece
+    : pieces.find(pieceHasGripBinding);
+  return gripAnchor ? gripPreviewSourcePieces(gripAnchor) : [];
 }
 
 function createWorkbenchPreviewMesh(sourcePieces) {
@@ -3909,12 +4140,66 @@ function createWorkbenchPreviewMesh(sourcePieces) {
 }
 
 function gripPreviewSourcePieces(piece) {
-  return pieces.includes(piece) ? pieces : [piece];
+  if (!piece) return [];
+  if (!pieces.includes(piece)) return [piece];
+  return connectedWorkbenchPiecesFor(piece);
+}
+
+function gripCollisionSourcePieces(piece) {
+  return piece ? [piece] : [];
+}
+
+function gripCollisionSourcePieceForComponent(parentPiece, component) {
+  if (!parentPiece || !component) return null;
+  return {
+    id: `${parentPiece.id ?? "compound"}:${component.id ?? component.resourceId ?? "component"}`,
+    resourceId: component.resourceId ?? parentPiece.resourceId,
+    materialIds: [...(component.materialIds ?? parentPiece.materialIds ?? [])],
+    role: component.role ?? parentPiece.role,
+    color: component.color ?? parentPiece.color,
+    baseMass: component.baseMass ?? parentPiece.baseMass,
+    densityKgM3: component.densityKgM3 ?? parentPiece.densityKgM3,
+    dims: component.dims.clone(),
+    offset: (parentPiece.offset ?? new THREE.Vector3()).clone().add(component.offset ?? new THREE.Vector3()),
+    grid: { ...component.grid },
+    solid: component.solid,
+    solidCells: component.solidCells ?? solidCellsFor(component),
+    fullSolid: component.fullSolid,
+    gripOffset: null,
+    gripNormal: null,
+    gripAngle: parentPiece.gripAngle ?? component.gripAngle ?? 0,
+  };
+}
+
+function connectedWorkbenchPiecesFor(seedPiece) {
+  if (!pieces.includes(seedPiece)) return seedPiece ? [seedPiece] : [];
+  const boxesByPiece = new Map(pieces.map((piece) => [piece, solidWorldCellBoxes(piece)]));
+  const connected = new Set([seedPiece]);
+  const pending = [seedPiece];
+  while (pending.length) {
+    const current = pending.shift();
+    const currentBoxes = boxesByPiece.get(current) ?? [];
+    for (const other of pieces) {
+      if (connected.has(other)) continue;
+      const otherBoxes = boxesByPiece.get(other) ?? [];
+      if (!cellGroupsTouch(currentBoxes, otherBoxes)) continue;
+      connected.add(other);
+      pending.push(other);
+    }
+  }
+  return pieces.filter((piece) => connected.has(piece));
+}
+
+function pieceHasGripBinding(piece) {
+  if (!piece) return false;
+  if (piece.gripOffset && piece.gripNormal) return true;
+  if (piece.appearance?.gripOffset && piece.appearance?.gripNormal) return true;
+  return (piece.components ?? []).some((component) => component.gripOffset && component.gripNormal);
 }
 
 function createGripFailurePreviewMesh(piece, grip, options = {}) {
   if (!piece || !grip?.localPoint || !grip?.normal) return null;
-  const sourcePieces = options.sourcePieces ?? gripPreviewSourcePieces(piece);
+  const sourcePieces = options.sourcePieces ?? gripCollisionSourcePieces(piece);
   const geometry = createWorkbenchPreviewGeometry(sourcePieces);
   if (!geometry.getAttribute("position")?.count) {
     geometry.dispose();
@@ -3949,7 +4234,7 @@ function createGripFailurePreviewMesh(piece, grip, options = {}) {
 function playGripFailureDropAnimation(piece, grip) {
   const { rightArm } = forgeAvatar?.userData?.limbs ?? {};
   if (!rightArm || !piece || !grip) return;
-  const mesh = createGripFailurePreviewMesh(piece, grip);
+  const mesh = createGripFailurePreviewMesh(piece, grip, { sourcePieces: grip.sourcePieces });
   if (!mesh) return;
   const equipped = equipPreviewMeshOnAvatar({
     avatar: forgeAvatar,
@@ -3972,7 +4257,7 @@ function playGripFailureDropAnimation(piece, grip) {
 }
 
 function playGripCollisionFailureAnimation(piece, grip) {
-  const mesh = createGripFailurePreviewMesh(piece, grip, { opacity: 0.84 });
+  const mesh = createGripFailurePreviewMesh(piece, grip, { opacity: 0.84, sourcePieces: grip?.sourcePieces });
   if (mesh) {
     const equipped = equipPreviewMeshOnAvatar({
       avatar: forgeAvatar,
@@ -4070,6 +4355,7 @@ function updateGripCollisionAttemptAnimations(dt) {
 }
 
 function playGripCollisionFlashAnimation(collision) {
+  clearGripCollisionFeedback();
   const patches = (collision?.collisions ?? [])
     .map((entry) => collisionPatchFromSummary(entry.collisionPatch))
     .filter(Boolean);
@@ -4098,6 +4384,23 @@ function playGripCollisionFlashAnimation(collision) {
   }
 }
 
+function clearGripCollisionFeedback() {
+  for (const animation of gripCollisionFlashAnimations.splice(0)) {
+    scene.remove(animation.mesh);
+    animation.mesh?.geometry?.dispose?.();
+    animation.material?.dispose?.();
+  }
+  for (const animation of gripCollisionAttemptAnimations.splice(0)) {
+    animation.mesh?.parent?.remove(animation.mesh);
+    disposePreviewMesh(animation.mesh);
+  }
+  for (const animation of avatarCollisionPartFlashAnimations.splice(0)) {
+    if (animation.mesh && animation.originalMaterial) animation.mesh.material = animation.originalMaterial;
+    animation.flashMaterial?.dispose?.();
+  }
+  clearAvatarCollisionProbeFlash();
+}
+
 function updateGripCollisionFlashAnimations(dt) {
   for (let index = gripCollisionFlashAnimations.length - 1; index >= 0; index--) {
     const animation = gripCollisionFlashAnimations[index];
@@ -4116,6 +4419,74 @@ function updateGripCollisionFlashAnimations(dt) {
       mesh.geometry.dispose();
       animation.material.dispose();
       gripCollisionFlashAnimations.splice(index, 1);
+    }
+  }
+}
+
+function flashAvatarCollisionProbe() {
+  clearAvatarCollisionProbeFlash();
+  forgeAvatar.traverse((object) => {
+    if (!object.isMesh || !object.visible || shouldIgnoreAvatarProbeFlashMesh(object)) return;
+    const originalMaterial = object.material;
+    const flashMaterial = originalMaterial.clone();
+    object.material = flashMaterial;
+    avatarCollisionProbeFlashAnimations.push({
+      mesh: object,
+      originalMaterial,
+      flashMaterial,
+      originalColor: flashMaterial.color?.clone?.() ?? null,
+      originalEmissive: flashMaterial.emissive?.clone?.() ?? null,
+      elapsed: 0,
+      duration: 0.5,
+    });
+  });
+}
+
+function clearAvatarCollisionProbeFlash() {
+  for (const animation of avatarCollisionProbeFlashAnimations.splice(0)) {
+    if (animation.mesh && animation.originalMaterial) animation.mesh.material = animation.originalMaterial;
+    animation.flashMaterial?.dispose?.();
+  }
+}
+
+function shouldIgnoreAvatarProbeFlashMesh(object) {
+  const ignoredNames = new Set([
+    "equippedTool",
+    "heldBlock",
+    "equippedForgedItem",
+    "gripHand",
+    "gripFailurePreview",
+    "gripCollisionGhost",
+    "gripCollisionPosePreview",
+    "gripCollisionFlash",
+    "faceMarker",
+    "gripBindingMarker",
+  ]);
+  for (let current = object; current; current = current.parent) {
+    if (ignoredNames.has(current.name)) return true;
+  }
+  return false;
+}
+
+function updateAvatarCollisionProbeFlashAnimations(dt) {
+  const white = new THREE.Color(0xffffff);
+  for (let index = avatarCollisionProbeFlashAnimations.length - 1; index >= 0; index--) {
+    const animation = avatarCollisionProbeFlashAnimations[index];
+    const material = animation.flashMaterial;
+    animation.elapsed += Math.min(dt, 1 / 30);
+    const progress = THREE.MathUtils.clamp(animation.elapsed / animation.duration, 0, 1);
+    const pulse = Math.sin(progress * Math.PI);
+    if (material.color && animation.originalColor) {
+      material.color.copy(animation.originalColor).lerp(white, pulse * 0.92);
+    }
+    if (material.emissive) {
+      material.emissive.copy(animation.originalEmissive ?? new THREE.Color(0x000000)).lerp(white, pulse * 0.65);
+      material.emissiveIntensity = Math.max(material.emissiveIntensity ?? 0, pulse * 1.4);
+    }
+    if (progress >= 1) {
+      animation.mesh.material = animation.originalMaterial;
+      material.dispose?.();
+      avatarCollisionProbeFlashAnimations.splice(index, 1);
     }
   }
 }
@@ -4192,6 +4563,8 @@ function createWorkbenchPreviewGeometry(sourcePieces) {
         ...component,
         materialIds: [...(component.materialIds ?? [])],
         color: (component.color ?? piece.color ?? new THREE.Color(resources[component.resourceId]?.color ?? resources.iron.color)).clone(),
+        baseMass: component.baseMass,
+        densityKgM3: component.densityKgM3,
         dims: component.dims.clone(),
         offset: component.offset.clone().add(piece.offset).sub(origin),
         grid: { ...component.grid },
@@ -4225,6 +4598,13 @@ function previewGripPlacementForPieces(sourcePieces) {
   const bounds = localBoundsForPieces(sourcePieces);
   const origin = bounds.getCenter(new THREE.Vector3());
   for (const piece of sourcePieces) {
+    if (piece.gripOffset && piece.gripNormal) {
+      return {
+        offset: piece.gripOffset.clone().add(piece.offset).sub(origin),
+        normal: piece.gripNormal.clone(),
+        angle: piece.gripAngle ?? 0,
+      };
+    }
     for (const component of componentsFromPiece(piece)) {
       if (!component.gripOffset || !component.gripNormal) continue;
       return {
@@ -4255,7 +4635,6 @@ function equipPreviewMeshOnAvatar({ avatar, mesh, currentMesh = null, scale = 1 
     disposePreviewMesh(mesh);
     return null;
   }
-  const handBottomAnchor = new THREE.Vector3(0, -0.99, -0.02);
   mesh.scale.setScalar(scale);
   const gripBasis = gripSurfaceBasis(gripNormal, mesh.userData.gripAngle ?? 0);
   const { handSide, handFront, handApproach } = avatarPalmDownGripBasis();
@@ -4263,7 +4642,8 @@ function equipPreviewMeshOnAvatar({ avatar, mesh, currentMesh = null, scale = 1 
   const targetMatrix = new THREE.Matrix4().makeBasis(handSide, handFront, handApproach);
   mesh.quaternion.setFromRotationMatrix(targetMatrix.multiply(sourceMatrix.invert()));
   const gripOffset = grip.clone().multiplyScalar(scale).applyQuaternion(mesh.quaternion);
-  mesh.position.copy(handBottomAnchor).sub(gripOffset);
+  const embeddedAnchor = avatarGripHandAnchor.clone().add(handApproach.clone().multiplyScalar(gripHandEmbedDepth));
+  mesh.position.copy(embeddedAnchor).sub(gripOffset);
   rightArm.add(mesh);
   return mesh;
 }
@@ -4336,6 +4716,63 @@ function showToolSettingsMenu(x, y) {
   const top = Math.min(y, window.innerHeight - rect.height - 8);
   toolSettingsMenu.style.left = `${Math.max(8, left)}px`;
   toolSettingsMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+function createDraftContextMenu() {
+  const menu = document.createElement("div");
+  menu.className = "forge-context-menu draft-context-menu";
+  menu.hidden = true;
+  menu.setAttribute("aria-hidden", "true");
+  menu.addEventListener("contextmenu", (event) => event.preventDefault());
+  menu.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button || !activeDraftContextId) return;
+    if (button.dataset.draftRename != null) {
+      renameDraft(activeDraftContextId);
+      return;
+    }
+    if (button.dataset.draftDelete != null) {
+      deleteDraft(activeDraftContextId);
+    }
+  });
+  document.body.append(menu);
+  return menu;
+}
+
+function renderDraftContextMenu() {
+  if (!draftContextMenu) return;
+  const title = document.createElement("strong");
+  title.textContent = t("forging.draftMenu");
+  const renameButton = document.createElement("button");
+  renameButton.type = "button";
+  renameButton.dataset.draftRename = "";
+  renameButton.textContent = t("forging.renameDraft");
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "danger";
+  deleteButton.dataset.draftDelete = "";
+  deleteButton.textContent = t("forging.deleteDraft");
+  draftContextMenu.replaceChildren(title, renameButton, deleteButton);
+}
+
+function showDraftContextMenu(draftId, x, y) {
+  if (!draftContextMenu) return;
+  activeDraftContextId = draftId;
+  renderDraftContextMenu();
+  draftContextMenu.hidden = false;
+  draftContextMenu.setAttribute("aria-hidden", "false");
+  const rect = draftContextMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  draftContextMenu.style.left = `${Math.max(8, left)}px`;
+  draftContextMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideDraftContextMenu() {
+  if (!draftContextMenu) return;
+  activeDraftContextId = "";
+  draftContextMenu.hidden = true;
+  draftContextMenu.setAttribute("aria-hidden", "true");
 }
 
 function hideToolSettingsMenu() {
@@ -4586,25 +5023,30 @@ function gripCandidateFromTarget(target, options = {}) {
   if (!target?.piece) return null;
   const { piece, localPoint, normal } = target;
   const normalAxis = dominantAxis(normal);
-  const surface = piece.components ? null : gripSurfaceCellForLocalPoint(piece, localPoint, normal);
+  const compoundGrip = piece.components ? compoundGripSurfaceForLocalPoint(piece, localPoint, normal) : null;
+  const surface = piece.components ? compoundGrip?.surface : gripSurfaceCellForLocalPoint(piece, localPoint, normal);
   if (!piece.components && !surface) return null;
-  const surfaceLocalPoint = surface?.localPoint ?? localPoint;
+  if (piece.components && !compoundGrip) return null;
+  const surfaceLocalPoint = compoundGrip?.localPoint ?? surface?.localPoint ?? localPoint;
   const footprintA = avatarHandGripFootprint.x;
   const footprintB = avatarHandGripFootprint.y;
-  const region = piece.components
-    ? gripBoundingFaceRegion(piece, surfaceLocalPoint, normalAxis)
-    : gripSurfaceRegionForCell(piece, surface.cell, normal);
+  const region = compoundGrip?.region ?? gripSurfaceRegionForCell(piece, surface.cell, normal);
   if (!region) return null;
   const angle = currentGripGestureAngle();
   const gripLocalPoint = gripLocalPointForRegion(surfaceLocalPoint, normal, region, footprintA, footprintB);
-  const marker = buildGripPlacementMarkerGeometry(piece, gripLocalPoint, normal, footprintA, footprintB, angle);
+  const marker = compoundGrip
+    ? buildCompoundGripPlacementMarkerGeometry(compoundGrip, gripLocalPoint, normal, footprintA, footprintB, angle)
+    : buildGripPlacementMarkerGeometry(piece, gripLocalPoint, normal, footprintA, footprintB, angle);
   const fit = evaluateGripFit(footprintA, footprintB, region.sizeA, region.sizeB, {
     normalAxis,
     contactArea: marker.contactArea,
     foldedArea: marker.foldedArea,
     patchCount: marker.patchCount,
   });
-  const collision = fit.valid ? gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle) : null;
+  const sourcePieces = compoundGrip?.sourcePieces ?? gripCollisionSourcePieces(piece);
+  const collision = fit.valid
+    ? gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle, { sourcePieces })
+    : null;
   if (collision) collision.angle = angle;
   const collidesWithAvatar = Boolean(collision?.collides);
   const blockedByAvatarCollision = fit.valid && collidesWithAvatar;
@@ -4629,11 +5071,12 @@ function gripCandidateFromTarget(target, options = {}) {
     normal: normal.clone(),
     angle,
     marker,
+    sourcePieces,
   };
 }
 
-function gripCandidateCollidesWithAvatar(piece, gripLocalPoint, normal, angle = 0) {
-  return gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle).collides;
+function gripCandidateCollidesWithAvatar(piece, gripLocalPoint, normal, angle = 0, options = {}) {
+  return gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle, options).collides;
 }
 
 function emptyGripCollisionReport() {
@@ -4642,29 +5085,32 @@ function emptyGripCollisionReport() {
     collisionCount: 0,
     ignoredHandCollisionCount: 0,
     collisionParts: [],
+    ignoredCollisionParts: [],
     collisions: [],
   };
 }
 
-function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle = 0) {
+function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle = 0, options = {}) {
   const { rightArm } = forgeAvatar?.userData?.limbs ?? {};
   if (!piece || !gripLocalPoint || !normal || !rightArm) return emptyGripCollisionReport();
 
   forgeAvatar.updateMatrixWorld(true);
   rightArm.updateMatrixWorld(true);
 
-  const sourcePieces = gripPreviewSourcePieces(piece);
+  const sourcePieces = options.sourcePieces?.length ? options.sourcePieces : gripCollisionSourcePieces(piece);
   const bounds = localBoundsForPieces(sourcePieces);
   const origin = bounds.getCenter(new THREE.Vector3());
+  const itemProfile = gripCollisionItemProfile(sourcePieces, bounds);
   const gripOffset = gripLocalPoint.clone().add(piece.offset).sub(origin);
   const itemMatrixWorld = equippedItemMatrixWorldForGrip(rightArm, gripOffset, normal, angle);
-  const handContactBox = gripHandContactBox(rightArm);
+  const handContactBoxes = gripHandContactBoxes(rightArm);
   const avatarBoxes = avatarBodyCollisionBoxes();
   if (!avatarBoxes.length) return emptyGripCollisionReport();
   const avatarCollisionParts = [...new Set(avatarBoxes.map((box) => box.name))];
 
   const collisions = [];
   const collisionPartSet = new Set();
+  const ignoredCollisionPartSet = new Set();
   let collisionCount = 0;
   let ignoredHandCollisionCount = 0;
   const maxLoggedPairs = 12;
@@ -4672,8 +5118,10 @@ function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle
     for (const avatarBox of avatarBoxes) {
       if (!orientedBoxIntersectsOrientedBox(itemBox, avatarBox.box)) continue;
       const collisionPatch = collisionPatchOnItem(itemBox, avatarBox.box);
-      if (collisionPatch && collisionPatchTouchesHandContact(collisionPatch, handContactBox)) {
+      const penetrationDepth = orientedBoxPenetrationDepth(itemBox, avatarBox.box);
+      if (collisionPatch && canIgnoreGripCollisionPatch(collisionPatch, avatarBox.name, handContactBoxes, penetrationDepth, itemProfile)) {
         ignoredHandCollisionCount += 1;
+        ignoredCollisionPartSet.add(avatarBox.name);
         continue;
       }
       collisionCount += 1;
@@ -4685,6 +5133,7 @@ function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle
           avatarBox: summarizeBox3(avatarBox.box),
           intersectionBox: summarizeBox3(intersectionBox3(itemBox.aabb, avatarBox.box.aabb)),
           collisionPatch: summarizeCollisionPatch(collisionPatch),
+          penetrationDepth: Number((penetrationDepth ?? 0).toFixed(4)),
         });
       }
     }
@@ -4694,22 +5143,38 @@ function gripCandidateAvatarCollisionReport(piece, gripLocalPoint, normal, angle
     collisionCount,
     ignoredHandCollisionCount,
     collisionParts: [...collisionPartSet],
+    ignoredCollisionParts: [...ignoredCollisionPartSet],
     avatarCollisionParts,
     collisions,
   };
 }
 
 function equippedItemMatrixWorldForGrip(rightArm, gripOffset, gripNormal, gripAngle = 0) {
-  const handBottomAnchor = new THREE.Vector3(0, -0.99, -0.02);
   const gripBasis = gripSurfaceBasis(gripNormal, gripAngle);
   const { handSide, handFront, handApproach } = avatarPalmDownGripBasis();
   const sourceMatrix = new THREE.Matrix4().makeBasis(gripBasis.side, gripBasis.front, gripBasis.approach);
   const targetMatrix = new THREE.Matrix4().makeBasis(handSide, handFront, handApproach);
   const quaternion = new THREE.Quaternion().setFromRotationMatrix(targetMatrix.multiply(sourceMatrix.invert()));
   const gripOffsetInArm = gripOffset.clone().applyQuaternion(quaternion);
-  const position = handBottomAnchor.clone().sub(gripOffsetInArm);
+  const embeddedAnchor = avatarGripHandAnchor.clone().add(handApproach.clone().multiplyScalar(gripHandEmbedDepth));
+  const position = embeddedAnchor.sub(gripOffsetInArm);
   const localMatrix = new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1));
   return rightArm.matrixWorld.clone().multiply(localMatrix);
+}
+
+function gripCollisionItemProfile(sourcePieces, bounds = null) {
+  const itemBounds = bounds ?? localBoundsForPieces(sourcePieces);
+  const size = itemBounds.getSize(new THREE.Vector3());
+  const spans = [size.x, size.y, size.z].filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  const narrowSpan = spans[0] ?? 0;
+  const middleSpan = spans[1] ?? 0;
+  const longSpan = spans[2] ?? 0;
+  return {
+    narrowSpan,
+    middleSpan,
+    longSpan,
+    slender: narrowSpan > 0 && narrowSpan <= 0.18 && longSpan >= narrowSpan * 5,
+  };
 }
 
 function equippedItemCollisionBoxes(sourcePieces, origin, itemMatrixWorld) {
@@ -4735,7 +5200,13 @@ function transformedLocalBox(center, dims, matrixWorld) {
 }
 
 function orientedBoxFromLocalBox(center, dims, matrixWorld) {
-  const halfSize = dims.clone().multiplyScalar(0.5);
+  const matrixScale = new THREE.Vector3();
+  matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), matrixScale);
+  const halfSize = new THREE.Vector3(
+    Math.abs(dims.x * matrixScale.x) * 0.5,
+    Math.abs(dims.y * matrixScale.y) * 0.5,
+    Math.abs(dims.z * matrixScale.z) * 0.5,
+  );
   const worldCenter = center.clone().applyMatrix4(matrixWorld);
   const rotation = new THREE.Matrix4().extractRotation(matrixWorld);
   const axes = [
@@ -4814,27 +5285,115 @@ function orientedBoxIntersectsOrientedBox(a, b) {
   return axes.every((axis) => projectedIntervalsOverlap(projectPoints(a.corners, axis), projectPoints(b.corners, axis)));
 }
 
-function gripHandContactBox(rightArm) {
-  if (!rightArm) return null;
-  // This is the tolerated hand contact envelope around the avatar palm.
-  // It prevents the held object itself from being treated as avatar collision.
-  return orientedBoxFromLocalBox(
-    new THREE.Vector3(0, -0.9, -0.04),
-    new THREE.Vector3(0.64, 0.62, 0.64),
-    rightArm.matrixWorld,
+function orientedBoxPenetrationDepth(a, b) {
+  if (!a?.corners?.length || !b?.corners?.length) return 0;
+  if (!boxesOverlap(a.aabb, b.aabb)) return 0;
+  const axes = [...a.axes, ...b.axes];
+  for (const axisA of a.axes) {
+    for (const axisB of b.axes) {
+      const cross = new THREE.Vector3().crossVectors(axisA, axisB);
+      if (cross.lengthSq() > 1e-8) axes.push(cross.normalize());
+    }
+  }
+  let minDepth = Infinity;
+  for (const axis of axes) {
+    const projectionA = projectPoints(a.corners, axis);
+    const projectionB = projectPoints(b.corners, axis);
+    const overlap = Math.min(projectionA.max, projectionB.max) - Math.max(projectionA.min, projectionB.min);
+    if (overlap <= 0) return 0;
+    minDepth = Math.min(minDepth, overlap);
+  }
+  return Number.isFinite(minDepth) ? minDepth : 0;
+}
+
+function gripHandContactBoxes(rightArm) {
+  const { leftArm } = forgeAvatar?.userData?.limbs ?? {};
+  return preciseLimbContactBoxes([leftArm, rightArm]);
+}
+
+function preciseLimbContactBoxes(limbs) {
+  const boxes = [];
+  for (const limb of limbs) {
+    if (!limb) continue;
+    limb.updateMatrixWorld(true);
+    limb.traverse((object) => {
+      if (!object.isMesh || shouldIgnoreLimbContactMesh(object)) return;
+      if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+      const box = object.geometry.boundingBox?.clone?.();
+      if (!box) return;
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3()).addScalar(0.018);
+      boxes.push(orientedBoxFromLocalBox(center, size, object.matrixWorld));
+    });
+  }
+  return boxes;
+}
+
+function shouldIgnoreLimbContactMesh(object) {
+  const ignoredNames = new Set([
+    "equippedTool",
+    "heldBlock",
+    "equippedForgedItem",
+    "gripHand",
+    "gripFailurePreview",
+    "gripCollisionGhost",
+    "gripCollisionPosePreview",
+    "gripCollisionFlash",
+    "faceMarker",
+    "gripBindingMarker",
+  ]);
+  for (let current = object; current; current = current.parent) {
+    if (ignoredNames.has(current.name)) return true;
+  }
+  return false;
+}
+
+function collisionPatchTouchesHandContact(patch, handContactBoxes) {
+  if (!patch || !handContactBoxes) return false;
+  const patchBox = orientedBoxFromCenterSizeAxes(patch.center, patch.size, patch.axes);
+  return handContactBoxes.some((box) => orientedBoxIntersectsOrientedBox(patchBox, box));
+}
+
+function canIgnoreGripCollisionPatch(patch, avatarPartName, handContactBoxes, penetrationDepth = 0, itemProfile = null) {
+  if (!collisionPatchTouchesHandContact(patch, handContactBoxes)) return false;
+  if (isHardProtectedAvatarCollisionPart(avatarPartName)) return false;
+  return canIgnoreCarrySideGrazingCollision(patch, avatarPartName, penetrationDepth, itemProfile);
+}
+
+function canIgnoreCarrySideGrazingCollision(patch, avatarPartName, penetrationDepth = 0, itemProfile = null) {
+  if (!itemProfile?.slender || !isCarrySideAvatarCollisionPart(avatarPartName)) return false;
+  const rawSize = patch.rawSize ?? patch.size;
+  const rawVolume = rawSize.x * rawSize.y * rawSize.z;
+  const maxDepth = Math.max(rawSize.x, rawSize.y, rawSize.z);
+  const narrowLimit = Math.max(0.035, itemProfile.narrowSpan * 0.58);
+  const volumeLimit = Math.max(0.0015, itemProfile.narrowSpan * itemProfile.narrowSpan * 0.42);
+  return (
+    penetrationDepth <= narrowLimit ||
+    (rawVolume <= volumeLimit && maxDepth <= Math.max(0.16, itemProfile.middleSpan * 1.35))
   );
 }
 
-function collisionPatchTouchesHandContact(patch, handContactBox) {
-  if (!patch || !handContactBox) return false;
-  const patchBox = orientedBoxFromCenterSizeAxes(patch.center, patch.size, patch.axes);
-  return orientedBoxIntersectsOrientedBox(patchBox, handContactBox);
+function isCarrySideAvatarCollisionPart(name) {
+  if (!name) return false;
+  return /rightBackpackSidePocket|rightBackpackStrap|rightBackpackShoulder|rightLeg|rightLegPant|rightLegBootLip|rightLegBoot|belt|buckle/i.test(name);
+}
+
+function isHardProtectedAvatarCollisionPart(name) {
+  if (!name) return true;
+  if (isCarrySideAvatarCollisionPart(name)) return false;
+  return /body|shirt|collar|backpack|head|eye|nose|mouth|hair/i.test(name);
+}
+
+function isSoftProtectedAvatarCollisionPart(name) {
+  if (!name) return false;
+  return /belt|buckle|leg|pants|boot/i.test(name);
 }
 
 function collisionPatchOnItem(itemBox, avatarBox) {
   if (!itemBox?.corners?.length || !avatarBox?.corners?.length) return null;
   const localCenter = new THREE.Vector3();
   const size = new THREE.Vector3();
+  const rawSize = new THREE.Vector3();
   for (let index = 0; index < 3; index++) {
     const axis = itemBox.axes[index];
     const itemCenterProjection = itemBox.center.dot(axis);
@@ -4848,6 +5407,7 @@ function collisionPatchOnItem(itemBox, avatarBox) {
     const fullSize = itemHalf * 2;
     const overlapSize = max - min;
     const minVisibleSize = Math.min(0.035, fullSize);
+    rawSize.setComponent(index, overlapSize);
     size.setComponent(index, Math.min(fullSize, Math.max(overlapSize, minVisibleSize)));
     localCenter.setComponent(index, (min + max) * 0.5 - itemCenterProjection);
   }
@@ -4858,6 +5418,7 @@ function collisionPatchOnItem(itemBox, avatarBox) {
   return {
     center,
     size,
+    rawSize,
     axes: itemBox.axes.map((axis) => axis.clone()),
   };
 }
@@ -4867,6 +5428,7 @@ function summarizeCollisionPatch(patch) {
   return {
     center: summarizeVector3(patch.center),
     size: summarizeVector3(patch.size),
+    rawSize: patch.rawSize ? summarizeVector3(patch.rawSize) : null,
     axes: patch.axes.map(summarizeVector3),
   };
 }
@@ -5061,6 +5623,7 @@ function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit, co
     collisionCount: collision?.collisionCount ?? 0,
     ignoredHandCollisionCount: collision?.ignoredHandCollisionCount ?? 0,
     collisionParts,
+    ignoredCollisionParts: collision?.ignoredCollisionParts ?? [],
     avatarCollisionParts: collision?.avatarCollisionParts ?? [],
     firstCollisionPart: collisionParts[0] ?? null,
     collisionPairs: collision?.collisions ?? [],
@@ -5094,8 +5657,7 @@ function logGripFitMetrics({ context, piece, normal, normalAxis, region, fit, co
     regionSource: region.source ?? "surface",
   };
   window.NicechunkForgingGripDebug = metrics;
-  console.info("[NiceChunk Forging Grip]", metrics);
-  if (collidesWithAvatar) console.warn("[NiceChunk Forging Grip Collision]", metrics);
+  if (collidesWithAvatar) console.warn("[NiceChunk Forging Grip Collision Parts]", collisionParts);
 }
 
 function summarizeBox3(box) {
@@ -5198,6 +5760,111 @@ function gripWholeFaceRegionForSolidPiece(piece, normalAxis, sign, axes) {
     sizeB: dims[axes[1]],
     plane: sign > 0 ? dims[normalAxis] * 0.5 : -dims[normalAxis] * 0.5,
   };
+}
+
+function compoundGripSurfaceForLocalPoint(piece, localPoint, normal) {
+  if (!piece?.components?.length || !localPoint || !normal) return null;
+  const normalAxis = dominantAxis(normal);
+  const tangentAxes = [0, 1, 2].filter((axis) => axis !== normalAxis);
+  let best = null;
+  let bestScore = Infinity;
+  for (const component of piece.components) {
+    const proxy = componentGripProxy(component);
+    const componentLocalPoint = localPoint.clone().sub(component.offset ?? new THREE.Vector3());
+    if (!componentLocalPointNearGripSurface(componentLocalPoint, proxy, normal)) continue;
+    const surface = gripSurfaceCellForLocalPoint(proxy, componentLocalPoint, normal);
+    if (!surface) continue;
+    const componentSurfacePoint = surface.localPoint ?? componentLocalPoint;
+    const castSurfacePoint = componentSurfacePoint.clone().add(component.offset ?? new THREE.Vector3());
+    const tangentA = castSurfacePoint.getComponent(tangentAxes[0]) - localPoint.getComponent(tangentAxes[0]);
+    const tangentB = castSurfacePoint.getComponent(tangentAxes[1]) - localPoint.getComponent(tangentAxes[1]);
+    const normalDistance = castSurfacePoint.getComponent(normalAxis) - localPoint.getComponent(normalAxis);
+    const score = tangentA * tangentA + tangentB * tangentB + normalDistance * normalDistance * 0.25;
+    if (score >= bestScore) continue;
+    const componentRegion = gripSurfaceRegionForCell(proxy, surface.cell, normal);
+    if (!componentRegion) continue;
+    bestScore = score;
+    const sourcePiece = gripCollisionSourcePieceForComponent(piece, component);
+    best = {
+      component,
+      proxy,
+      surface,
+      componentLocalPoint: componentSurfacePoint,
+      localPoint: castSurfacePoint,
+      region: translateGripRegion(componentRegion, component.offset ?? new THREE.Vector3(), "component-surface"),
+      sourcePieces: sourcePiece ? [sourcePiece] : [piece],
+    };
+  }
+  return best;
+}
+
+function componentLocalPointNearGripSurface(localPoint, component, normal) {
+  const normalAxis = dominantAxis(normal);
+  const dims = [component.dims.x, component.dims.y, component.dims.z];
+  const grid = [component.grid.x, component.grid.y, component.grid.z];
+  for (let axis = 0; axis < 3; axis++) {
+    const cellSize = dims[axis] / grid[axis];
+    const tolerance = axis === normalAxis
+      ? Math.max(cellSize * 2.4, avatarHandGripSize.z * 0.6)
+      : Math.max(cellSize * 1.2, 0.025);
+    const value = localPoint.getComponent(axis);
+    if (value < -dims[axis] * 0.5 - tolerance || value > dims[axis] * 0.5 + tolerance) return false;
+  }
+  return true;
+}
+
+function componentGripProxy(component) {
+  return {
+    dims: component.dims,
+    grid: component.grid,
+    solid: component.solid,
+    solidCells: component.solidCells ?? solidCellsFor(component),
+    fullSolid: component.fullSolid,
+  };
+}
+
+function translateGripRegion(region, offset, source = region.source) {
+  const normalAxis = [0, 1, 2].find((axis) => !region.axes.includes(axis));
+  return {
+    ...region,
+    source,
+    minA: region.minA + offset.getComponent(region.axes[0]),
+    maxA: region.maxA + offset.getComponent(region.axes[0]),
+    minB: region.minB + offset.getComponent(region.axes[1]),
+    maxB: region.maxB + offset.getComponent(region.axes[1]),
+    plane: normalAxis === undefined ? region.plane : region.plane + offset.getComponent(normalAxis),
+  };
+}
+
+function buildCompoundGripPlacementMarkerGeometry(componentGrip, gripLocalPoint, normal, footprintA, footprintB, angle) {
+  const componentOffset = componentGrip.component.offset ?? new THREE.Vector3();
+  const marker = buildGripPlacementMarkerGeometry(
+    componentGrip.proxy,
+    gripLocalPoint.clone().sub(componentOffset),
+    normal,
+    footprintA,
+    footprintB,
+    angle,
+  );
+  return offsetGripMarkerGeometry(marker, componentOffset);
+}
+
+function offsetGripMarkerGeometry(marker, offset) {
+  return {
+    ...marker,
+    surface: offsetPositionArray(marker.surface, offset),
+    lines: offsetPositionArray(marker.lines, offset),
+  };
+}
+
+function offsetPositionArray(positions, offset) {
+  const shifted = [...positions];
+  for (let index = 0; index < shifted.length; index += 3) {
+    shifted[index] += offset.x;
+    shifted[index + 1] += offset.y;
+    shifted[index + 2] += offset.z;
+  }
+  return shifted;
 }
 
 function gripBoundingFaceRegion(piece, localPoint, normalAxis) {
@@ -5474,8 +6141,9 @@ function placeGripHand(target, grip) {
     : point.clone();
   const matrix = new THREE.Matrix4().makeBasis(side, front, approach);
   gripHand.quaternion.setFromRotationMatrix(matrix);
+  const previewHandDistance = Math.max(0.012, avatarHandGripSize.z * 0.5 + 0.018 - gripHandEmbedDepth);
   gripHand.position.copy(gripPoint)
-    .add(approach.clone().multiplyScalar(avatarHandGripSize.z * 0.5 + 0.018))
+    .add(approach.clone().multiplyScalar(previewHandDistance))
     .add(front.clone().multiplyScalar(0.015));
   gripHand.traverse((child) => {
     if (!child.isMesh) return;
@@ -5498,14 +6166,32 @@ function updateGripBindingMarker() {
     gripBindingMarker.visible = false;
     return;
   }
-  const marker = buildGripPlacementMarkerGeometry(
-    piece,
-    piece.gripOffset,
-    piece.gripNormal,
-    avatarHandGripFootprint.x,
-    avatarHandGripFootprint.y,
-    piece.gripAngle ?? 0,
-  );
+  let marker = null;
+  if (piece.components) {
+    const componentGrip = compoundGripSurfaceForLocalPoint(piece, piece.gripOffset, piece.gripNormal);
+    if (!componentGrip) {
+      gripBindingMarker.visible = false;
+      return;
+    }
+    if (!componentGrip.localPoint.equals(piece.gripOffset)) piece.gripOffset.copy(componentGrip.localPoint);
+    marker = buildCompoundGripPlacementMarkerGeometry(
+      componentGrip,
+      componentGrip.localPoint,
+      piece.gripNormal,
+      avatarHandGripFootprint.x,
+      avatarHandGripFootprint.y,
+      piece.gripAngle ?? 0,
+    );
+  } else {
+    marker = buildGripPlacementMarkerGeometry(
+      piece,
+      piece.gripOffset,
+      piece.gripNormal,
+      avatarHandGripFootprint.x,
+      avatarHandGripFootprint.y,
+      piece.gripAngle ?? 0,
+    );
+  }
   gripBindingMarker.visible = true;
   gripBindingMarker.position.copy(piece.mesh.position);
   gripBindingMarker.rotation.set(0, 0, 0);
@@ -6397,6 +7083,7 @@ function animate() {
   updateGripFailureAnimations(dt);
   updateGripCollisionAttemptAnimations(dt);
   updateGripCollisionFlashAnimations(dt);
+  updateAvatarCollisionProbeFlashAnimations(dt);
   updateAvatarCollisionPartFlashAnimations(dt);
   renderer.render(scene, camera);
 }
