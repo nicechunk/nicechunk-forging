@@ -4534,7 +4534,7 @@ function placeFaceMarker(target) {
       return;
     }
     const marker = grip.marker ?? buildGripPointMarkerGeometry(piece, localPoint, normal);
-    setGripMarkerStyle(grip.valid);
+    setGripMarkerStyle(grip.fitValid ?? grip.valid);
     faceMarker.visible = true;
     faceMarker.position.copy(piece.mesh.position);
     faceMarker.rotation.set(0, 0, 0);
@@ -4621,6 +4621,8 @@ function gripCandidateFromTarget(target, options = {}) {
     collidesWithAvatar,
     blockedByAvatarCollision,
     collision: collision ?? emptyGripCollisionReport(),
+    fitValid: fit.valid,
+    fitReason: fit.reason,
     localPoint: gripLocalPoint,
     normal: normal.clone(),
     angle,
@@ -5460,7 +5462,7 @@ function gripSurfaceBasis(normal, angle = 0) {
 
 function placeGripHand(target, grip) {
   const { piece, point, normal } = target;
-  const valid = Boolean(grip?.valid);
+  const valid = Boolean(grip?.fitValid ?? grip?.valid);
   gripHand.visible = true;
   const { side, front, approach } = gripSurfaceBasis(normal, grip?.angle ?? currentGripGestureAngle());
   const gripPoint = grip?.localPoint
