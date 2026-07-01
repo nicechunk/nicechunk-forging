@@ -26,6 +26,7 @@
       </div>
       <div class="scene-actions">
         <button id="showChainCode" type="button" data-i18n="forging.chainCode">Chain Code</button>
+        <button id="randomForgeLocation" type="button" data-i18n="forging.randomLocation">Random Location</button>
         <div data-i18n-language-menu></div>
         <button id="resetCamera" type="button" data-i18n="forging.resetView">Reset View</button>
       </div>
@@ -35,8 +36,9 @@
       <section class="scene-pane" aria-label="Forging scene" data-i18n-aria-label="forging.sceneLabel">
         <canvas id="forgeScene"></canvas>
         <div class="forge-scene-hud">
-          <span>LIVE FORGE SCENE</span>
-          <strong>ANVIL_GRID_24</strong>
+          <span data-i18n="forging.sceneLive">Live Forge Scene</span>
+          <strong data-i18n="forging.anvilGrid">ANVIL_GRID_24</strong>
+          <small id="forgeLocationText" data-i18n="forging.locationLoading">Locating</small>
         </div>
         <div class="forge-status">
           <span id="statusText" data-i18n="forging.status.ready">Ready</span>
@@ -55,26 +57,21 @@
           <button id="hammerMode" class="hammer-button" type="button" aria-pressed="false" data-i18n="forging.hammer">Hammer</button>
         </header>
 
-        <section class="panel-section">
+        <nav class="panel-tabs" role="tablist" aria-label="Forging panel sections" data-i18n-aria-label="forging.panelTabs">
+          <button id="materialsTab" class="panel-tab active" type="button" role="tab" aria-selected="true" aria-controls="materialsPanel" data-forging-panel-tab="materials" data-i18n="forging.materialsTab">Materials</button>
+          <button id="propertiesTab" class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="propertiesPanel" data-forging-panel-tab="properties" data-i18n="forging.propertiesTab">Properties</button>
+        </nav>
+
+        <section id="materialsPanel" class="panel-section panel-tab-panel active" role="tabpanel" aria-labelledby="materialsTab">
           <div class="section-title-row">
             <h2><span class="panel-icon inventory" aria-hidden="true"></span><span data-i18n="forging.materials">Materials</span></h2>
             <button id="refreshMaterials" type="button" data-i18n="forging.syncMaterials">Sync</button>
           </div>
           <div class="resource-grid" id="resourceGrid" aria-live="polite" aria-label="Material list" data-i18n-aria-label="forging.materialList"></div>
+          <div class="material-detail-panel" id="materialDetailPanel" aria-live="polite"></div>
         </section>
 
-        <section class="panel-section">
-          <div class="section-title-row">
-            <h2><span class="panel-icon drafts" aria-hidden="true"></span><span data-i18n="forging.drafts">Drafts</span></h2>
-            <div class="draft-actions">
-              <button id="saveDraft" type="button" data-i18n="forging.saveDraft">Save Draft</button>
-              <button id="saveDraftAsNew" type="button" data-i18n="forging.newDraft">New Draft</button>
-            </div>
-          </div>
-          <div class="draft-list" id="draftList" aria-label="Draft list" data-i18n-aria-label="forging.draftList"></div>
-        </section>
-
-        <section class="panel-section">
+        <section id="propertiesPanel" class="panel-section panel-tab-panel" role="tabpanel" aria-labelledby="propertiesTab" hidden>
           <h2><span class="panel-icon workpiece" aria-hidden="true"></span><span data-i18n="forging.workpiece">Workpiece</span></h2>
           <dl class="stat-list">
             <div>
@@ -100,6 +97,17 @@
             <button id="castPiece" type="button" data-i18n="forging.cast">Cast</button>
             <button id="clearPiece" type="button" data-i18n="forging.clear">Clear</button>
           </div>
+
+          <div class="draft-panel">
+            <div class="section-title-row">
+              <h2><span class="panel-icon drafts" aria-hidden="true"></span><span data-i18n="forging.drafts">Drafts</span></h2>
+              <div class="draft-actions">
+                <button id="saveDraft" type="button" data-i18n="forging.saveDraft">Save Draft</button>
+                <button id="saveDraftAsNew" type="button" data-i18n="forging.newDraft">New Draft</button>
+              </div>
+            </div>
+            <div class="draft-list" id="draftList" aria-label="Draft list" data-i18n-aria-label="forging.draftList"></div>
+          </div>
         </section>
 
         <footer class="forging-primary-action">
@@ -117,8 +125,10 @@
         <textarea id="chainCodeOutput" spellcheck="false" wrap="soft" data-i18n-placeholder="forging.chainCodePlaceholder"></textarea>
         <div class="chain-dialog-actions">
           <p data-i18n="forging.chainCodeHint">This compact code stores the forged components, offsets, dimensions, materials, and voxel cuts.</p>
+          <p id="chainActionStatus" class="chain-action-status" data-i18n="forging.chainActionReady">Ready to forge on-chain.</p>
           <button id="generateChainCode" type="button" data-i18n="forging.generateCode">Generate</button>
           <button id="saveChainCode" type="button" data-i18n="forging.saveCode">Save</button>
+          <button id="forgeOnChain" type="button" data-i18n="forging.forgeOnChain">Forge On-chain</button>
           <button id="copyChainCode" type="button" data-i18n="forging.copyCode">Copy Code</button>
         </div>
       </section>
